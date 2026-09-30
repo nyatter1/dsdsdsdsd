@@ -1,23 +1,13 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Player presence for multiplayer game rooms
-    match /games/{gameId}/players/{playerId} {
-      allow read: if true;
-      allow create: if request.resource.data.uid == playerId;
-      allow update: if request.resource.data.uid == playerId;
-      allow delete: if true;
-    }
 
-    // In-game multiplayer chat messages
-    match /games/{gameId}/messages/{messageId} {
+    // Allow full access to users profiles, friends, following, followers
+    match /users/{userId} {
       allow read, write: if true;
     }
-
-    // Games data
-    match /games/{gameId} {
-      allow read: if true;
-      allow write: if true;
+    match /users/{userId}/{document=**} {
+      allow read, write: if true;
     }
 
     // Friend requests
@@ -25,14 +15,25 @@ service cloud.firestore {
       allow read, write: if true;
     }
 
-    // User profiles & user friends subcollections
-    match /users/{userId} {
-      allow read: if true;
-      allow write: if true;
+    // Published games & studio projects
+    match /published_games/{gameId} {
+      allow read, write: if true;
     }
-    match /users/{userId}/{document=**} {
-      allow read: if true;
-      allow write: if true;
+    match /games/{gameId} {
+      allow read, write: if true;
+    }
+    match /games/{gameId}/{document=**} {
+      allow read, write: if true;
+    }
+
+    // Published clothing items
+    match /published_clothing/{clothingId} {
+      allow read, write: if true;
+    }
+
+    // Catch-all for any other collections
+    match /{document=**} {
+      allow read, write: if true;
     }
   }
 }

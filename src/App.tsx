@@ -57,6 +57,7 @@ import {
   onAuthStateChanged,
   doc,
   getDoc,
+  setDoc,
   UserProfileData,
 } from './utils/firebase.ts';
 import { LogOut } from 'lucide-react';
@@ -182,16 +183,23 @@ function AppContent() {
   const [activeShirtUrl, setActiveShirtUrl] = useState<string | null>(initialSaved.shirtUrl);
   const [activePantsUrl, setActivePantsUrl] = useState<string | null>(initialSaved.pantsUrl);
 
-  // Sync auth state with Firebase
+  // Sync auth state with Firebase and load equipped avatar + background
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (user) => {
       if (user) {
         try {
           const snap = await getDoc(doc(db, 'users', user.uid));
           if (snap.exists()) {
-            const data = snap.data() as UserProfileData;
+            const data = snap.data() as any;
             setCurrentUser(data);
             localStorage.setItem('rovix_current_user_v1', JSON.stringify(data));
+
+            if (data.avatarColors) setAvatarColors(data.avatarColors);
+            if (data.activeShirtUrl !== undefined) setActiveShirtUrl(data.activeShirtUrl);
+            if (data.activePantsUrl !== undefined) setActivePantsUrl(data.activePantsUrl);
+            if (data.equippedBackgroundUrl || data.backgroundUrl) {
+              setEquippedBackgroundUrl(data.equippedBackgroundUrl || data.backgroundUrl);
+            }
           }
         } catch (e) {
           console.warn('Error fetching user profile doc:', e);
@@ -215,14 +223,32 @@ function AppContent() {
     return () => unsubGames();
   }, []);
 
-  // Auto-save avatar whenever colors or clothes change
+  // Auto-save avatar & background to Firestore and LocalStorage
   useEffect(() => {
     saveAvatarToStorage({
       colors: avatarColors,
       shirtUrl: activeShirtUrl,
       pantsUrl: activePantsUrl,
     });
-  }, [avatarColors, activeShirtUrl, activePantsUrl]);
+
+    if (db && currentUser?.uid) {
+      setDoc(
+        doc(db, 'users', currentUser.uid),
+        {
+          uid: currentUser.uid,
+          username: currentUser.username,
+          displayName: currentUser.displayName || currentUser.username,
+          avatarColors,
+          activeShirtUrl,
+          activePantsUrl,
+          equippedBackgroundUrl,
+          backgroundUrl: equippedBackgroundUrl,
+          bio: currentUser.bio || '',
+        },
+        { merge: true }
+      ).catch(() => {});
+    }
+  }, [avatarColors, activeShirtUrl, activePantsUrl, equippedBackgroundUrl, currentUser?.uid]);
 
   const handleLogOut = async () => {
     try {
