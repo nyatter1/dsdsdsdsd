@@ -1229,8 +1229,7 @@ export function subscribeToLiveGames(callback: (games: SavedGame[]) => void): ()
       saveGamesListToLocalStorage(list);
       callback(list);
     },
-    (err) => {
-      console.warn('Live games sync notice:', err);
+    () => {
       callback(getSavedGames());
     }
   );

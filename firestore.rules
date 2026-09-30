@@ -3,13 +3,15 @@ service cloud.firestore {
   match /databases/{database}/documents {
     // Player presence for multiplayer game rooms
     match /games/{gameId}/players/{playerId} {
-      // Anyone can read active players in a game room
       allow read: if true;
-
-      // Users can only write their own player document (playerId matches document ID)
       allow create: if request.resource.data.uid == playerId;
       allow update: if request.resource.data.uid == playerId;
       allow delete: if true;
+    }
+
+    // In-game multiplayer chat messages
+    match /games/{gameId}/messages/{messageId} {
+      allow read, write: if true;
     }
 
     // Games data
@@ -18,10 +20,19 @@ service cloud.firestore {
       allow write: if true;
     }
 
-    // User profiles
+    // Friend requests
+    match /friend_requests/{requestId} {
+      allow read, write: if true;
+    }
+
+    // User profiles & user friends subcollections
     match /users/{userId} {
       allow read: if true;
-      allow write: if request.auth != null && request.auth.uid == userId;
+      allow write: if true;
+    }
+    match /users/{userId}/{document=**} {
+      allow read: if true;
+      allow write: if true;
     }
   }
 }

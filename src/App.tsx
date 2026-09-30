@@ -3,6 +3,7 @@ import {
   Home,
   Compass,
   User,
+  Users,
   MoreHorizontal,
   Search,
   Settings,
@@ -24,6 +25,8 @@ import GameLoadingScreen from './components/GameLoadingScreen.tsx';
 import GameWorld from './components/GameWorld.tsx';
 import RovixStudio from './components/RovixStudio.tsx';
 import UserProfileView from './components/UserProfileView.tsx';
+import FriendsView from './components/friends/FriendsView.tsx';
+import HomeFriendsHeader from './components/home/HomeFriendsHeader.tsx';
 import MarketplaceCatalogView from './components/marketplace/MarketplaceCatalogView.tsx';
 import MarketplaceItemDetailsView from './components/marketplace/MarketplaceItemDetailsView.tsx';
 import MarketplaceBackgroundDetailsView from './components/marketplace/MarketplaceBackgroundDetailsView.tsx';
@@ -36,6 +39,16 @@ import {
 } from './utils/backgroundsStorage.ts';
 import { getSavedAvatar, saveAvatarToStorage, ClothingItem } from './utils/inventoryStorage.ts';
 import { SavedGame, getSavedGames, DEFAULT_TEST_PLACE, subscribeToLiveGames } from './utils/gamesStorage.ts';
+import {
+  getSavedFriends,
+  subscribeToMyFriends,
+  sendFriendRequest,
+  removeFriend,
+  followUser,
+  unfollowUser,
+  FriendUser,
+} from './utils/friendsStorage.ts';
+import Avatar3DIcon from './components/common/Avatar3DIcon.tsx';
 import AuthPage from './components/auth/AuthPage.tsx';
 import {
   auth,
@@ -122,7 +135,7 @@ function AppContent() {
     return null;
   });
 
-  const [activeTab, setActiveTab] = useState<'home' | 'discover' | 'profile' | 'avatar' | 'marketplace' | 'studio' | 'more'>('home');
+  const [activeTab, setActiveTab] = useState<'home' | 'discover' | 'profile' | 'avatar' | 'marketplace' | 'studio' | 'friends' | 'more'>('home');
   const [editorSubTab, setEditorSubTab] = useState<'skin' | 'shirt' | 'pants' | 'backgrounds' | 'borders'>('skin');
   const [searchQuery, setSearchQuery] = useState('');
   const [showSettingsMenu, setShowSettingsMenu] = useState(false);
@@ -132,6 +145,17 @@ function AppContent() {
     () => getEquippedBackgroundItem()?.imageUrl || null
   );
   const [editingClothingItem, setEditingClothingItem] = useState<ClothingItem | null>(null);
+  const [friendsList, setFriendsList] = useState<FriendUser[]>([]);
+  const [viewingUserProfile, setViewingUserProfile] = useState<FriendUser | null>(null);
+
+  // Subscribe to real Firestore friends
+  useEffect(() => {
+    if (!currentUser?.uid) return;
+    const unsub = subscribeToMyFriends(currentUser.uid, (list) => {
+      setFriendsList(list);
+    });
+    return () => unsub();
+  }, [currentUser?.uid]);
 
   // Profile Name (username and display name same)
   const profileName = currentUser?.username || 'Player';
@@ -348,6 +372,8 @@ function AppContent() {
           <h1 className="text-lg font-bold text-white tracking-normal whitespace-nowrap hidden sm:block">
             {activeTab === 'profile'
               ? 'Profile'
+              : activeTab === 'friends'
+              ? 'Friends'
               : activeTab === 'avatar'
               ? 'Avatar Editor'
               : activeTab === 'discover'
@@ -379,41 +405,22 @@ function AppContent() {
           </div>
         </div>
 
-        {/* Right side: User Profile + Studio + Play Test Place + Settings */}
+        {/* Right side: User Profile 3D Model Icon + Settings only (No test place) */}
         <div className="flex items-center gap-2 sm:gap-2.5">
           <button
             type="button"
-            onClick={() => setActiveTab('profile')}
-            className={`flex items-center gap-2 px-2.5 py-1.5 text-xs font-semibold rounded transition-colors cursor-pointer border ${
-              activeTab === 'profile'
-                ? 'bg-[#2b2e35] text-white border-blue-500 shadow-sm'
-                : 'bg-[#232528] hover:bg-[#2b2e35] text-neutral-200 border-neutral-700/80'
+            onClick={() => {
+              setViewingUserProfile(null);
+              setActiveTab('profile');
+            }}
+            className={`w-9 h-9 rounded-full flex items-center justify-center transition-all cursor-pointer border overflow-hidden bg-[#16181b] ${
+              activeTab === 'profile' && !viewingUserProfile
+                ? 'border-blue-400 shadow-sm ring-2 ring-blue-500/50'
+                : 'border-neutral-700/90 hover:border-neutral-500'
             }`}
-            title={`My Profile (${profileName})`}
+            title={`My Profile (@${profileName})`}
           >
-            <div className="w-5 h-5 rounded-full bg-blue-600 flex items-center justify-center font-bold text-[10px] text-white shrink-0">
-              {profileName.charAt(0).toUpperCase()}
-            </div>
-            <span className="hidden md:inline font-bold">{profileName}</span>
-            <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" title="Online" />
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setActiveTab('studio')}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-[#232528] hover:bg-[#2e3136] text-neutral-200 hover:text-white border border-neutral-700/80 shadow-sm transition-colors cursor-pointer"
-          >
-            <Hammer className="w-3.5 h-3.5 text-blue-400" />
-            <span>Rovix Studio</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => handleLaunchGame()}
-            className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-[#2a6839] hover:bg-[#327a44] text-white border border-[#3e9354]/60 shadow-sm transition-colors cursor-pointer"
-          >
-            <Play className="w-3.5 h-3.5 fill-current" />
-            <span>Play Test Place</span>
+            <Avatar3DIcon colors={avatarColors} shirtUrl={activeShirtUrl} className="w-9 h-9" />
           </button>
 
           <div className="relative">
@@ -421,7 +428,7 @@ function AppContent() {
               type="button"
               title="Settings"
               onClick={() => setShowSettingsMenu(!showSettingsMenu)}
-              className="w-9 h-9 flex items-center justify-center text-neutral-300 hover:text-white hover:bg-[#2b2d31] border border-transparent hover:border-neutral-700/60 transition-colors"
+              className="w-9 h-9 flex items-center justify-center text-neutral-300 hover:text-white hover:bg-[#2b2d31] border border-transparent hover:border-neutral-700/60 transition-colors cursor-pointer"
             >
               <Settings className="w-4 h-4" />
             </button>
@@ -497,14 +504,30 @@ function AppContent() {
             <button
               type="button"
               title={`Profile (${profileName})`}
-              onClick={() => setActiveTab('profile')}
+              onClick={() => {
+                setViewingUserProfile(null);
+                setActiveTab('profile');
+              }}
               className={`w-10 h-10 flex items-center justify-center transition-all ${
-                activeTab === 'profile'
+                activeTab === 'profile' && !viewingUserProfile
                   ? 'bg-[#2e3135] text-white border-l-2 border-white'
                   : 'text-neutral-400 hover:text-white hover:bg-[#232528]'
               }`}
             >
               <User className="w-5 h-5" />
+            </button>
+
+            <button
+              type="button"
+              title="Friends"
+              onClick={() => setActiveTab('friends')}
+              className={`w-10 h-10 flex items-center justify-center transition-all ${
+                activeTab === 'friends'
+                  ? 'bg-[#2e3135] text-white border-l-2 border-white'
+                  : 'text-neutral-400 hover:text-white hover:bg-[#232528]'
+              }`}
+            >
+              <Users className="w-5 h-5" />
             </button>
 
             <button
@@ -578,10 +601,13 @@ function AppContent() {
           ) : activeTab === 'profile' ? (
             /* ROBLOX PROFILE VIEW */
             <UserProfileView
-              colors={avatarColors}
-              shirtUrl={activeShirtUrl}
-              pantsUrl={activePantsUrl}
-              backgroundUrl={equippedBackgroundUrl}
+              key={viewingUserProfile ? `profile_${viewingUserProfile.uid}` : `self_${currentUser?.uid || 'local'}`}
+              viewingUser={viewingUserProfile}
+              currentUserId={currentUser?.uid}
+              colors={viewingUserProfile?.avatarColors || avatarColors}
+              shirtUrl={viewingUserProfile ? (viewingUserProfile.shirtUrl ?? null) : activeShirtUrl}
+              pantsUrl={viewingUserProfile ? (viewingUserProfile.pantsUrl ?? null) : activePantsUrl}
+              backgroundUrl={viewingUserProfile ? (viewingUserProfile.backgroundUrl ?? null) : equippedBackgroundUrl}
               savedGames={savedGames}
               onPlayGame={(game) => handleLaunchGame(game)}
               onOpenStudio={(game) => {
@@ -591,6 +617,44 @@ function AppContent() {
               onNavigateToAvatar={() => setActiveTab('avatar')}
               onEquipShirt={(url) => setActiveShirtUrl(url)}
               onEquipPants={(url) => setActivePantsUrl(url)}
+              onBack={() => {
+                setViewingUserProfile(null);
+                setActiveTab('friends');
+              }}
+              onProfileUpdated={(name, bio) => {
+                if (currentUser) {
+                  setCurrentUser({ ...currentUser, displayName: name, bio });
+                }
+              }}
+              onAddFriend={(target) => {
+                sendFriendRequest(
+                  { uid: currentUser?.uid || 'local', username: profileName, avatarColors, shirtUrl: activeShirtUrl },
+                  target
+                );
+              }}
+              onRemoveFriend={(targetUid) => {
+                removeFriend(targetUid, currentUser?.uid || 'local');
+              }}
+              onToggleFollow={(target) => {
+                followUser(
+                  { uid: currentUser?.uid || 'local', username: profileName, avatarColors, shirtUrl: activeShirtUrl },
+                  target
+                );
+              }}
+              isFriend={viewingUserProfile ? friendsList.some((f) => f.uid === viewingUserProfile.uid) : false}
+            />
+          ) : activeTab === 'friends' ? (
+            /* FRIENDS VIEW */
+            <FriendsView
+              myUsername={currentUser?.username || profileName}
+              myUid={currentUser?.uid || 'user_local'}
+              myColors={avatarColors}
+              myShirtUrl={activeShirtUrl}
+              onViewProfile={(targetUser) => {
+                setViewingUserProfile(targetUser);
+                setActiveTab('profile');
+              }}
+              onLaunchGame={() => handleLaunchGame()}
             />
           ) : activeTab === 'marketplace' ? (
             /* MARKETPLACE VIEW */
@@ -925,60 +989,16 @@ function AppContent() {
           ) : (
             /* HOME VIEW */
             <main className="p-6 max-w-6xl w-full mx-auto space-y-8 flex-1">
-              <div className="flex items-center justify-between pb-3 border-b border-neutral-800/80">
-                <div
-                  onClick={() => setActiveTab('profile')}
-                  className="flex items-center gap-3.5 cursor-pointer group p-1.5 -m-1.5 rounded hover:bg-[#202225] transition-colors"
-                  title={`View Profile (${profileName})`}
-                >
-                  <div className="w-12 h-12 bg-blue-600 rounded-full border border-neutral-700/60 overflow-hidden flex items-center justify-center font-black text-white shadow-sm group-hover:scale-105 transition-transform">
-                    {profileName.charAt(0).toUpperCase()}
-                  </div>
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <h2 className="text-xl font-bold text-white tracking-tight group-hover:text-blue-400 transition-colors">
-                        {profileName}
-                      </h2>
-                      <span className="text-[11px] px-2 py-0.5 bg-neutral-800 text-blue-400 font-semibold rounded border border-neutral-700 flex items-center gap-1">
-                        <span>Profile</span>
-                        <span>&rarr;</span>
-                      </span>
-                    </div>
-                    <p className="text-xs text-neutral-400 mt-0.5">Classic Rovix Avatar &amp; Experience Hub</p>
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setActiveTab('profile')}
-                    className="flex items-center gap-1.5 px-3 py-2 bg-[#202225] hover:bg-[#282a2e] text-neutral-200 text-xs font-semibold border border-neutral-700 transition-colors cursor-pointer"
-                  >
-                    <User className="w-3.5 h-3.5 text-blue-400" />
-                    <span>My Profile</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => setActiveTab('studio')}
-                    className="flex items-center gap-1.5 px-3 py-2 bg-[#22252a] hover:bg-[#2b2e35] text-neutral-200 text-xs font-semibold border border-neutral-700 transition-colors cursor-pointer"
-                  >
-                    <Hammer className="w-3.5 h-3.5 text-blue-400" />
-                    <span>Rovix Studio</span>
-                  </button>
-
-                  {savedGames.find((g) => g.isPublic) && (
-                    <button
-                      type="button"
-                      onClick={() => handleLaunchGame(savedGames.find((g) => g.isPublic))}
-                      className="flex items-center gap-2 px-4 py-2 bg-[#2a6839] hover:bg-[#327a44] text-white text-xs font-semibold rounded-none border border-[#3e9354]/60 shadow transition-colors cursor-pointer"
-                    >
-                      <Play className="w-3.5 h-3.5 fill-current" />
-                      <span>Play Experience</span>
-                    </button>
-                  )}
-                </div>
-              </div>
+              {/* Friends Header at top of Home page (replaces test profile) */}
+              <HomeFriendsHeader
+                friends={friendsList}
+                onOpenFriendsTab={() => setActiveTab('friends')}
+                onViewProfile={(targetFriend) => {
+                  setViewingUserProfile(targetFriend);
+                  setActiveTab('profile');
+                }}
+                onLaunchGame={() => handleLaunchGame()}
+              />
 
               {/* SECTION: Public Experiences on Homepage (Private ones are hidden) */}
               <section className="space-y-3.5">

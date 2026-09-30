@@ -7,7 +7,8 @@ import { SavedGame, StudioPart } from '../utils/gamesStorage.ts';
 import { LuaRuntime } from '../utils/luaEngine.ts';
 import RobloxGuiRenderer from './ui-engine/RobloxGuiRenderer.tsx';
 import { db, auth, doc, setDoc, deleteDoc, onSnapshot, collection } from '../utils/firebase.ts';
-import MultiplayerDebugOverlay, { MultiplayerDebugState } from './game/MultiplayerDebugOverlay.tsx';
+import InGameChat, { ChatMessage } from './game/InGameChat.tsx';
+import { createChatBubbleSprite } from '../utils/chatBubble3D.ts';
 
 export interface ActiveServerPlayer {
   uid: string; // The unique document ID / player session ID
@@ -75,6 +76,48 @@ export interface RemotePlayerGroupData {
   pantsMeshes: THREE.Mesh[];
   updateClothing: (newShirtUrl: string | null, newPantsUrl: string | null) => void;
   updateColors: (newColors: AvatarColors) => void;
+}
+
+function createNameTagSprite(usernameText: string): THREE.Sprite {
+  const tagCanvas = document.createElement('canvas');
+  tagCanvas.width = 512;
+  tagCanvas.height = 128;
+  const tagCtx = tagCanvas.getContext('2d')!;
+  tagCtx.clearRect(0, 0, 512, 128); // Transparent background
+
+  // Clean username only: white text with crisp black outline, centered and straight
+  tagCtx.font = '900 48px "Segoe UI", Arial, sans-serif';
+  tagCtx.textAlign = 'center';
+  tagCtx.textBaseline = 'middle';
+
+  // Thick crisp black stroke (outline)
+  tagCtx.lineJoin = 'round';
+  tagCtx.miterLimit = 2;
+  tagCtx.strokeStyle = '#000000';
+  tagCtx.lineWidth = 10;
+  tagCtx.strokeText(usernameText, 256, 64);
+
+  // Pure white text fill
+  tagCtx.fillStyle = '#ffffff';
+  tagCtx.fillText(usernameText, 256, 64);
+
+  const tagTex = new THREE.CanvasTexture(tagCanvas);
+  tagTex.colorSpace = THREE.SRGBColorSpace;
+  tagTex.generateMipmaps = true;
+
+  // Use THREE.Sprite so it is inherently billboarded, never rotated or tilted, always centered and straight
+  const tagMat = new THREE.SpriteMaterial({
+    map: tagTex,
+    transparent: true,
+    depthTest: true,
+    depthWrite: false,
+  });
+  const tagSprite = new THREE.Sprite(tagMat);
+  tagSprite.center.set(0.5, 0.5);
+  tagSprite.position.set(0, 2.75, 0); // Directly above the head, centered
+  tagSprite.scale.set(3.4, 0.85, 1);
+  tagSprite.renderOrder = 900;
+  return tagSprite;
 }
 
 function createRemotePlayerGroup(p: ActiveServerPlayer): RemotePlayerGroupData {
@@ -266,45 +309,8 @@ function createRemotePlayerGroup(p: ActiveServerPlayer): RemotePlayerGroupData {
   if (p.shirtUrl) applyTextureToMeshes(p.shirtUrl, shirtMeshes);
   if (p.pantsUrl) applyTextureToMeshes(p.pantsUrl, pantsMeshes);
 
-  // 3D Clean Roblox Name Tag: Clean white text with crisp black outline, no background box, perfectly centered above head
-  const tagCanvas = document.createElement('canvas');
-  tagCanvas.width = 512;
-  tagCanvas.height = 128;
-  const tagCtx = tagCanvas.getContext('2d')!;
-  tagCtx.clearRect(0, 0, 512, 128); // Transparent background
-
-  // Clean username only as requested
-  const usernameText = p.username || p.displayName || 'Player';
-  tagCtx.font = '900 48px "Segoe UI", Arial, sans-serif';
-  tagCtx.textAlign = 'center';
-  tagCtx.textBaseline = 'middle';
-
-  // Thick crisp black stroke (outline)
-  tagCtx.lineJoin = 'round';
-  tagCtx.miterLimit = 2;
-  tagCtx.strokeStyle = '#000000';
-  tagCtx.lineWidth = 10;
-  tagCtx.strokeText(usernameText, 256, 64);
-
-  // Pure white text fill
-  tagCtx.fillStyle = '#ffffff';
-  tagCtx.fillText(usernameText, 256, 64);
-
-  const tagTex = new THREE.CanvasTexture(tagCanvas);
-  tagTex.colorSpace = THREE.SRGBColorSpace;
-  tagTex.generateMipmaps = true;
-
-  // Use THREE.Sprite so it is inherently billboarded, never rotated or tilted, always centered and straight
-  const tagMat = new THREE.SpriteMaterial({
-    map: tagTex,
-    transparent: true,
-    depthTest: true,
-    depthWrite: false,
-  });
-  const tagSprite = new THREE.Sprite(tagMat);
-  tagSprite.center.set(0.5, 0.5);
-  tagSprite.position.set(0, 2.75, 0); // Directly above the head, centered
-  tagSprite.scale.set(3.4, 0.85, 1);
+  // 3D Clean Roblox Name Tag
+  const tagSprite = createNameTagSprite(p.username || p.displayName || 'Player');
   group.add(tagSprite);
 
   return {
@@ -422,9 +428,85 @@ export default function GameWorld({
         loadedPantsUrl: string | null;
         updateClothing: (newShirtUrl: string | null, newPantsUrl: string | null) => void;
         updateColors: (newColors: AvatarColors) => void;
+        chatBubble?: { sprite: THREE.Sprite; timer: any };
       }
     >
   >(new Map());
+
+  // In-Game Chat & 3D Head Chat Bubbles
+  const localChatBubbleRef = useRef<{ sprite: THREE.Sprite; timer: any } | null>(null);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+
+  // Trigger 3D speech bubble above head
+  const triggerChatBubble = useCallback(
+    (senderId: string, text: string) => {
+      if (senderId === playerId) {
+        if (localChatBubbleRef.current) {
+          clearTimeout(localChatBubbleRef.current.timer);
+          playerGroupRef.current?.remove(localChatBubbleRef.current.sprite);
+        }
+        const sprite = createChatBubbleSprite(text);
+        playerGroupRef.current?.add(sprite);
+        const timer = setTimeout(() => {
+          playerGroupRef.current?.remove(sprite);
+          localChatBubbleRef.current = null;
+        }, 6000);
+        localChatBubbleRef.current = { sprite, timer };
+      } else {
+        const rData = remoteMeshesRef.current.get(senderId);
+        if (rData) {
+          if (rData.chatBubble) {
+            clearTimeout(rData.chatBubble.timer);
+            rData.group.remove(rData.chatBubble.sprite);
+          }
+          const sprite = createChatBubbleSprite(text);
+          rData.group.add(sprite);
+          const timer = setTimeout(() => {
+            rData.group.remove(sprite);
+            rData.chatBubble = undefined;
+          }, 6000);
+          rData.chatBubble = { sprite, timer };
+        }
+      }
+    },
+    [playerId]
+  );
+
+  // Send in-game chat message handler
+  const handleSendChatMessage = useCallback(
+    async (text: string) => {
+      const trimmed = text.trim();
+      if (!trimmed) return;
+      const msgId = 'msg_' + Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 6);
+      const newMsg: ChatMessage = {
+        id: msgId,
+        senderId: playerId,
+        username: myUsername,
+        text: trimmed,
+        timestamp: Date.now(),
+      };
+
+      setChatMessages((prev) => [...prev, newMsg]);
+      triggerChatBubble(playerId, trimmed);
+
+      // 1. Broadcast locally (for same-browser tabs)
+      if (bcRef.current) {
+        try {
+          bcRef.current.postMessage({ type: 'chat', message: newMsg });
+        } catch {}
+      }
+
+      // 2. Broadcast over Firestore across all devices & browsers
+      if (db) {
+        try {
+          await setDoc(doc(db, 'games', gameId, 'messages', msgId), newMsg);
+        } catch (err) {
+          console.warn('[Multiplayer] Failed to send chat message to Firestore:', err);
+        }
+      }
+    },
+    [playerId, myUsername, gameId, triggerChatBubble]
+  );
 
   // Ref to always maintain live active players list for animation loop without stale closures
   const serverPlayersRef = useRef<ActiveServerPlayer[]>([]);
@@ -611,6 +693,15 @@ export default function GameWorld({
               return [...prev, { ...data.player, lastSeen: Date.now() }];
             }
           });
+        } else if (data?.type === 'chat' && data.message) {
+          const msg = data.message as ChatMessage;
+          if (msg.senderId !== playerId) {
+            setChatMessages((prev) => {
+              if (prev.some((m) => m.id === msg.id)) return prev;
+              return [...prev, msg];
+            });
+            triggerChatBubble(msg.senderId, msg.text);
+          }
         } else if (data?.type === 'leave' && data.uid) {
           handlePlayerLeft(data.uid);
         }
@@ -705,6 +796,7 @@ export default function GameWorld({
 
     // 3. Firebase Firestore Real-Time Presence & Listener (Phase 1)
     let unsubFirestore: (() => void) | null = null;
+    let unsubChat: (() => void) | null = null;
     if (db) {
       try {
         const playersColRef = collection(db, 'games', gameId, 'players');
@@ -781,6 +873,28 @@ export default function GameWorld({
         console.error('[Multiplayer] Error setting up Firestore listener:', err);
         setFirebaseStatus('ERROR');
       }
+
+      // Real-time chat messages listener
+      try {
+        const messagesColRef = collection(db, 'games', gameId, 'messages');
+        unsubChat = onSnapshot(messagesColRef, (snapshot) => {
+          if (!isMounted) return;
+          snapshot.docChanges().forEach((change) => {
+            if (change.type === 'added') {
+              const msg = change.doc.data() as ChatMessage;
+              if (msg && msg.senderId !== playerId) {
+                setChatMessages((prev) => {
+                  if (prev.some((m) => m.id === msg.id)) return prev;
+                  return [...prev, msg];
+                });
+                triggerChatBubble(msg.senderId, msg.text);
+              }
+            }
+          });
+        });
+      } catch (err) {
+        console.warn('[Multiplayer] Failed to listen to chat messages:', err);
+      }
     }
 
     // 4. Initial presence publish
@@ -842,6 +956,9 @@ export default function GameWorld({
 
       if (unsubFirestore) {
         unsubFirestore();
+      }
+      if (unsubChat) {
+        unsubChat();
       }
 
       // Normal departure: cleanly delete player presence document (Phase 2)
@@ -1203,6 +1320,10 @@ export default function GameWorld({
     );
     faceQuad.position.set(0, 1.62, 0.655);
     playerGroup.add(faceQuad);
+
+    // 3D Clean Roblox Nametag above local player head
+    const localNameTag = createNameTagSprite(myUsername);
+    playerGroup.add(localNameTag);
 
     // Pivots
     const leftArmPivot = new THREE.Group();
@@ -2035,56 +2156,12 @@ export default function GameWorld({
         <RobloxGuiRenderer root={activeRuntime.bridge.player.PlayerGui} />
       )}
 
-      {/* Development Multiplayer Diagnostics Panel (Phase 6) */}
-      <MultiplayerDebugOverlay
-        debugState={{
-          isConnected:
-            firebaseStatus === 'CONNECTED' ||
-            (MULTIPLAYER_TRANSPORT === 'websocket' && websocketStatus === 'CONNECTED'),
-          transport:
-            MULTIPLAYER_TRANSPORT === 'websocket' && websocketStatus === 'CONNECTED'
-              ? 'websocket'
-              : 'firebase',
-          myPlayerId: playerId,
-          firebaseStatus,
-          lastFirebaseUpdateTime: lastFirebaseUpdateTimeRef.current,
-          lastRemotePlayerUpdateTime: lastRemotePlayerUpdateTimeRef.current,
-          websocketStatus,
-          players: serverPlayers,
-          localPlayerPosition: playerGroupRef.current
-            ? [
-                playerGroupRef.current.position.x,
-                playerGroupRef.current.position.y,
-                playerGroupRef.current.position.z,
-              ]
-            : [0, 3, 0],
-        }}
+      {/* In-Game Chat at Bottom-Left (replaces bottom-left debug UI) */}
+      <InGameChat
+        messages={chatMessages}
+        myPlayerId={playerId}
+        onSendMessage={handleSendChatMessage}
       />
-
-      {/* Top Left Menu Icon */}
-      <div className="absolute top-3 left-4 flex items-center gap-2 z-20">
-        <button
-          type="button"
-          onClick={() => setShowExitModal(true)}
-          title="Rovix Menu (Esc)"
-          className="w-10 h-10 rounded bg-[#18191b]/80 hover:bg-[#25272a] border border-neutral-700/60 backdrop-blur-md flex items-center justify-center text-white transition-all shadow-md group cursor-pointer"
-        >
-          <svg className="w-5 h-5 text-white group-hover:scale-105 transition-transform" viewBox="0 0 100 100" fill="currentColor">
-            <path d="M 24 10 L 90 26 L 76 92 L 10 76 Z" />
-            <rect x="42" y="42" width="16" height="16" fill="#18191b" transform="rotate(14 50 50)" />
-          </svg>
-        </button>
-
-        <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded bg-[#18191b]/70 border border-neutral-800 text-xs text-neutral-300 backdrop-blur-md">
-          <span className="font-semibold text-white">{game?.title || 'Test Place'}</span>
-          <span className="text-neutral-600">•</span>
-          <span>WASD Move</span>
-          <span className="text-neutral-600">•</span>
-          <span>Space Jump (Arms up!)</span>
-          <span className="text-neutral-600">•</span>
-          <span>Drag to Orbit</span>
-        </div>
-      </div>
 
       {/* Top Right Roblox Leaderboard */}
       <div className="absolute top-3 right-4 z-40 flex flex-col items-end">

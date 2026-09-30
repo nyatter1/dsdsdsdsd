@@ -1,32 +1,36 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   User,
   Play,
   Hammer,
-  RotateCw,
   ChevronRight,
   MoreHorizontal,
-  Star,
-  Bell,
-  ThumbsUp,
-  ThumbsDown,
   ArrowLeft,
   X,
   Check,
   LayoutList,
   LayoutGrid,
+  UserPlus,
+  UserMinus,
+  Heart,
+  Pencil,
+  Image as ImageIcon,
 } from 'lucide-react';
 import ProfileBust3D from './profile/ProfileBust3D.tsx';
 import ProfileBanner3D from './profile/ProfileBanner3D.tsx';
 import ProfileAvatar2D from './profile/ProfileAvatar2D.tsx';
 import { AvatarColors } from './AvatarCanvas3D.tsx';
-import { SavedGame, CLICK_THE_BUTTON_PLACE } from '../utils/gamesStorage.ts';
+import { SavedGame } from '../utils/gamesStorage.ts';
 import { getStoredInventory } from '../utils/inventoryStorage.ts';
 import ClothingDummyPreview from './marketplace/ClothingDummyPreview.tsx';
 import MarketplaceItemDetailsView from './marketplace/MarketplaceItemDetailsView.tsx';
 import { MarketplaceItem, findMarketplaceItemByUrl } from '../utils/marketplaceItems.ts';
+import { FriendUser } from '../utils/friendsStorage.ts';
+import { db, doc, updateDoc } from '../utils/firebase.ts';
 
 export interface UserProfileViewProps {
+  viewingUser?: FriendUser | null;
+  currentUserId?: string;
   colors: AvatarColors;
   shirtUrl: string | null;
   pantsUrl: string | null;
@@ -37,6 +41,14 @@ export interface UserProfileViewProps {
   onNavigateToAvatar: () => void;
   onEquipShirt?: (url: string | null) => void;
   onEquipPants?: (url: string | null) => void;
+  onBack?: () => void;
+  onProfileUpdated?: (newDisplayName: string, newBio: string) => void;
+  onAddFriend?: (target: FriendUser) => void;
+  onRemoveFriend?: (targetUid: string) => void;
+  onToggleFollow?: (target: FriendUser) => void;
+  isFriend?: boolean;
+  isFollowing?: boolean;
+  isReqPending?: boolean;
 }
 
 const STORAGE_KEY_PROFILE = 'rovix_user_profile_v3';
@@ -50,16 +62,9 @@ interface ProfileData {
   followingCount: number;
 }
 
-const DEFAULT_PROFILE: ProfileData = {
-  displayName: 'Player',
-  username: '@Player',
-  bio: '',
-  friendsCount: 0,
-  followersCount: 0,
-  followingCount: 0,
-};
-
 export default function UserProfileView({
+  viewingUser,
+  currentUserId,
   colors,
   shirtUrl,
   pantsUrl,
@@ -70,9 +75,42 @@ export default function UserProfileView({
   onNavigateToAvatar,
   onEquipShirt,
   onEquipPants,
+  onBack,
+  onProfileUpdated,
+  onAddFriend,
+  onRemoveFriend,
+  onToggleFollow,
+  isFriend = false,
+  isFollowing = false,
+  isReqPending = false,
 }: UserProfileViewProps) {
-  // Load persistent profile details
+  const isOwnProfile = !viewingUser || (currentUserId && viewingUser.uid === currentUserId);
+
+  // Active user data
+  const activeDisplayName = isOwnProfile
+    ? undefined
+    : viewingUser?.displayName || viewingUser?.username || 'Player';
+  const activeUsername = isOwnProfile ? undefined : viewingUser?.username || 'Player';
+
+  const activeColors: AvatarColors = isOwnProfile
+    ? colors
+    : viewingUser?.avatarColors || { head: '#f5cd2f', torso: '#0d69ac', leftArm: '#f5cd2f', rightArm: '#f5cd2f', leftLeg: '#a0a528', rightLeg: '#a0a528' };
+  const activeShirt = isOwnProfile ? shirtUrl : viewingUser?.shirtUrl || null;
+  const activePants = isOwnProfile ? pantsUrl : viewingUser?.pantsUrl || null;
+  const activeBackground = isOwnProfile ? (backgroundUrl || null) : (viewingUser?.backgroundUrl || null);
+
+  // Load persistent profile details for self
   const [profile, setProfile] = useState<ProfileData>(() => {
+    if (!isOwnProfile && viewingUser) {
+      return {
+        displayName: viewingUser.displayName || viewingUser.username,
+        username: `@${viewingUser.username}`,
+        bio: (viewingUser as any).bio || `Hello! I'm ${viewingUser.username} on Rovix.`,
+        friendsCount: 0,
+        followersCount: 0,
+        followingCount: 0,
+      };
+    }
     try {
       const userRaw = localStorage.getItem('rovix_current_user_v1');
       if (userRaw) {
@@ -92,128 +130,223 @@ export default function UserProfileView({
       if (raw) {
         const parsed = JSON.parse(raw);
         if (parsed.displayName) {
-          return { ...DEFAULT_PROFILE, ...parsed };
+          return parsed;
         }
       }
     } catch {}
-    return DEFAULT_PROFILE;
+    return {
+      displayName: 'Player',
+      username: '@Player',
+      bio: '',
+      friendsCount: 0,
+      followersCount: 0,
+      followingCount: 0,
+    };
   });
+
+  // Keep profile in sync if viewingUser or isOwnProfile changes
+  useEffect(() => {
+    if (isOwnProfile) {
+      try {
+        const userRaw = localStorage.getItem('rovix_current_user_v1');
+        if (userRaw) {
+          const userObj = JSON.parse(userRaw);
+          if (userObj.username) {
+            setProfile({
+              displayName: userObj.displayName || userObj.username,
+              username: `@${userObj.username}`,
+              bio: userObj.bio || `Hello! I'm ${userObj.username} on Rovix!`,
+              friendsCount: 0,
+              followersCount: 0,
+              followingCount: 0,
+            });
+            return;
+          }
+        }
+        const raw = localStorage.getItem(STORAGE_KEY_PROFILE);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed.displayName) {
+            setProfile(parsed);
+            return;
+          }
+        }
+      } catch {}
+      setProfile({
+        displayName: 'Player',
+        username: '@Player',
+        bio: '',
+        friendsCount: 0,
+        followersCount: 0,
+        followingCount: 0,
+      });
+    } else if (viewingUser) {
+      setProfile({
+        displayName: viewingUser.displayName || viewingUser.username,
+        username: `@${viewingUser.username}`,
+        bio: (viewingUser as any).bio || `Hello! I'm ${viewingUser.username} on Rovix.`,
+        friendsCount: 0,
+        followersCount: 0,
+        followingCount: 0,
+      });
+    }
+  }, [viewingUser, isOwnProfile]);
 
   // Edit profile modal state
   const [isEditingProfile, setIsEditingProfile] = useState(false);
-  const [editForm, setEditForm] = useState(profile);
+  const [editDisplayName, setEditDisplayName] = useState('');
+  const [editBio, setEditBio] = useState('');
+
+  // 3-dots more menu dropdown state
+  const [showMoreMenu, setShowMoreMenu] = useState(false);
+  const moreMenuRef = useRef<HTMLDivElement>(null);
+
+  // Close more menu when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (moreMenuRef.current && !moreMenuRef.current.contains(e.target as Node)) {
+        setShowMoreMenu(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
   // Bio expanded state (more / less)
   const [isBioExpanded, setIsBioExpanded] = useState(false);
 
-  // Active profile tab: 'About' or 'Creations' (Screenshot 1 & 2)
+  // Active profile tab: 'About' or 'Creations'
   const [activeTab, setActiveTab] = useState<'About' | 'Creations'>('About');
 
-  // Banner view mode: default 3D (Screenshot 1 top-right button)
+  // Banner view mode: default 3D
   const [isBanner3D, setIsBanner3D] = useState(true);
 
-  // Creations view mode: 'list' or 'grid' (Screenshot 2 view toggle)
+  // Creations view mode: 'list' or 'grid'
   const [creationsViewMode, setCreationsViewMode] = useState<'list' | 'grid'>('list');
 
-  // Selected marketplace item for Marketplace Item Details View (Screenshot 2)
+  // Selected marketplace item for Details View
   const [selectedMarketplaceItem, setSelectedMarketplaceItem] = useState<MarketplaceItem | null>(null);
 
-  // Selected experience for Details Page (Screenshot 3)
+  // Selected experience for Details Page
   const [selectedGame, setSelectedGame] = useState<SavedGame | null>(null);
 
-  // Experience interaction states for Details Page
-  const [isFavorited, setIsFavorited] = useState(false);
-  const [isNotified, setIsNotified] = useState(false);
-  const [userRating, setUserRating] = useState<'like' | 'dislike' | null>(null);
-  const [likesCount, setLikesCount] = useState(0);
-  const [dislikesCount, setDislikesCount] = useState(0);
+  // Experience sub tab
   const [expSubTab, setExpSubTab] = useState<'About' | 'Store' | 'Servers'>('About');
 
   // Real clothing inventory
   const inventory = getStoredInventory();
 
-  // ONLY items the avatar is ACTUALLY currently wearing (NO placeholder unequipped items!)
-  const wearingItems: { id: string; name: string; type: 'shirt' | 'pants'; url: string; isEquipped: boolean }[] = [];
+  // ONLY items currently worn: Background + Shirt + Pants
+  const wearingItems: {
+    id: string;
+    name: string;
+    type: 'shirt' | 'pants' | 'background';
+    url: string;
+    isEquipped: boolean;
+  }[] = [];
 
-  if (shirtUrl) {
-    const matching = inventory.shirts.find((s) => s.dataUrl === shirtUrl);
+  // Background in Currently Wearing
+  if (activeBackground) {
+    wearingItems.push({
+      id: 'equipped_background',
+      name: 'Profile Background',
+      type: 'background',
+      url: activeBackground,
+      isEquipped: true,
+    });
+  }
+
+  if (activeShirt) {
+    const matching = inventory.shirts.find((s) => s.dataUrl === activeShirt);
     wearingItems.push({
       id: 'equipped_shirt',
       name: matching?.name || 'Classic Shirt',
       type: 'shirt',
-      url: shirtUrl,
+      url: activeShirt,
       isEquipped: true,
     });
   }
 
-  if (pantsUrl) {
-    const matching = inventory.pants.find((p) => p.dataUrl === pantsUrl);
+  if (activePants) {
+    const matching = inventory.pants.find((p) => p.dataUrl === activePants);
     wearingItems.push({
       id: 'equipped_pants',
       name: matching?.name || 'Classic Jeans',
       type: 'pants',
-      url: pantsUrl,
+      url: activePants,
       isEquipped: true,
     });
   }
 
-  // Filter real creations: Public experiences for everyone, plus private experiences if viewing own profile
-  const currentUserRaw = localStorage.getItem('rovix_current_user_v1');
-  const currentUserObj = currentUserRaw ? JSON.parse(currentUserRaw) : null;
-
+  // Filter creations
   const displayGames = savedGames.filter((g) => {
-    if (g.isPublic) return true;
-    const isCreator =
-      currentUserObj &&
-      (g.creatorId === currentUserObj.uid ||
-        g.creator === currentUserObj.username ||
-        g.creator === currentUserObj.displayName);
-    return isCreator;
+    if (isOwnProfile) return true;
+    return g.isPublic;
   });
 
-  const handleSaveProfile = () => {
-    setProfile(editForm);
+  const handleOpenEditProfile = () => {
+    setEditDisplayName(profile.displayName);
+    setEditBio(profile.bio);
+    setIsEditingProfile(true);
+    setShowMoreMenu(false);
+  };
+
+  const handleSaveProfile = async () => {
+    const newDisplayName = editDisplayName.trim() || profile.displayName;
+    const newBio = editBio.trim();
+
+    const updated = {
+      ...profile,
+      displayName: newDisplayName,
+      bio: newBio,
+    };
+    setProfile(updated);
+
     try {
-      localStorage.setItem(STORAGE_KEY_PROFILE, JSON.stringify(editForm));
-    } catch {}
+      localStorage.setItem(STORAGE_KEY_PROFILE, JSON.stringify(updated));
+      const userRaw = localStorage.getItem('rovix_current_user_v1');
+      if (userRaw) {
+        const userObj = JSON.parse(userRaw);
+        userObj.displayName = newDisplayName;
+        userObj.bio = newBio;
+        localStorage.setItem('rovix_current_user_v1', JSON.stringify(userObj));
+
+        // Update in Firestore
+        if (db && userObj.uid) {
+          await updateDoc(doc(db, 'users', userObj.uid), {
+            displayName: newDisplayName,
+            bio: newBio,
+          });
+        }
+      }
+    } catch (e) {
+      console.warn('Error saving profile changes:', e);
+    }
+
+    onProfileUpdated?.(newDisplayName, newBio);
     setIsEditingProfile(false);
   };
 
-  const handleToggleLike = (type: 'like' | 'dislike') => {
-    if (userRating === type) {
-      setUserRating(null);
-      if (type === 'like') setLikesCount((c) => Math.max(0, c - 1));
-      else setDislikesCount((c) => Math.max(0, c - 1));
-    } else {
-      if (userRating === 'like') setLikesCount((c) => Math.max(0, c - 1));
-      if (userRating === 'dislike') setDislikesCount((c) => Math.max(0, c - 1));
-
-      setUserRating(type);
-      if (type === 'like') setLikesCount((c) => c + 1);
-      else setDislikesCount((c) => c + 1);
-    }
-  };
-
   // =========================================================================
-  // VIEW 0: MARKETPLACE ITEM DETAILS PAGE (SCREENSHOT 2)
+  // VIEW 0: MARKETPLACE ITEM DETAILS PAGE
   // =========================================================================
   if (selectedMarketplaceItem) {
     const isEquipped =
-      (selectedMarketplaceItem.clothingType === 'shirt' && shirtUrl === selectedMarketplaceItem.dataUrl) ||
-      (selectedMarketplaceItem.clothingType === 'pants' && pantsUrl === selectedMarketplaceItem.dataUrl);
+      (selectedMarketplaceItem.clothingType === 'shirt' && activeShirt === selectedMarketplaceItem.dataUrl) ||
+      (selectedMarketplaceItem.clothingType === 'pants' && activePants === selectedMarketplaceItem.dataUrl);
 
     return (
       <MarketplaceItemDetailsView
         item={selectedMarketplaceItem}
         isEquipped={isEquipped}
-        avatarColors={colors}
-        userShirtUrl={shirtUrl}
-        userPantsUrl={pantsUrl}
+        avatarColors={activeColors}
+        userShirtUrl={activeShirt}
+        userPantsUrl={activePants}
         onEquipItem={(item) => {
           if (item.clothingType === 'shirt') {
-            onEquipShirt?.(shirtUrl === item.dataUrl ? null : item.dataUrl);
+            onEquipShirt?.(activeShirt === item.dataUrl ? null : item.dataUrl);
           } else {
-            onEquipPants?.(pantsUrl === item.dataUrl ? null : item.dataUrl);
+            onEquipPants?.(activePants === item.dataUrl ? null : item.dataUrl);
           }
         }}
         onBack={() => setSelectedMarketplaceItem(null)}
@@ -222,13 +355,12 @@ export default function UserProfileView({
   }
 
   // =========================================================================
-  // VIEW 1: EXPERIENCE DETAILS PAGE (AUTHENTIC ROBLOX DARK THEME)
+  // VIEW 1: EXPERIENCE DETAILS PAGE
   // =========================================================================
   if (selectedGame) {
     return (
       <div className="flex-1 bg-[#191b1d] text-[#e3e5e8] overflow-y-auto min-h-screen select-none font-sans">
         <div className="max-w-5xl mx-auto px-4 sm:px-6 py-6 space-y-6">
-          {/* Back to Profile Breadcrumb */}
           <button
             type="button"
             onClick={() => setSelectedGame(null)}
@@ -238,9 +370,7 @@ export default function UserProfileView({
             <span>Back to Profile</span>
           </button>
 
-          {/* Top Hero Section: Thumbnail on left, Details on right */}
           <div className="flex flex-col md:flex-row gap-6 items-start">
-            {/* Game Thumbnail */}
             <div className="w-full md:w-[58%] aspect-[16/10] bg-[#202225] rounded-xl overflow-hidden relative shadow-md border border-neutral-800 shrink-0">
               {selectedGame.iconUrl ? (
                 <img
@@ -250,238 +380,31 @@ export default function UserProfileView({
                 />
               ) : (
                 <div className={`w-full h-full bg-gradient-to-br ${selectedGame.gradient || 'from-[#1e3a5f] to-[#0a1420]'} flex items-center justify-center`}>
-                  <span className="text-4xl font-black text-white font-mono">{selectedGame.initials || 'BR'}</span>
+                  <span className="text-4xl font-black text-white font-mono">{selectedGame.initials}</span>
                 </div>
               )}
             </div>
 
-            {/* Game Info & Action Buttons */}
-            <div className="flex-1 w-full flex flex-col justify-between self-stretch py-1">
+            <div className="flex-1 w-full space-y-4">
               <div>
-                <div className="flex items-start justify-between gap-2">
-                  <h1 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">
-                    {selectedGame.title}
-                  </h1>
-                  <button
-                    type="button"
-                    onClick={() => onOpenStudio(selectedGame)}
-                    className="p-1.5 hover:bg-[#282a2e] rounded-md text-neutral-400 hover:text-white transition-colors"
-                    title="Edit in Rovix Studio"
-                  >
-                    <MoreHorizontal className="w-5 h-5" />
-                  </button>
-                </div>
-
-                <div className="text-xs text-neutral-300 mt-1 font-semibold">
-                  By <span className="hover:underline cursor-pointer">{selectedGame.creator || profile.username}</span>
-                </div>
-
-                <div className="flex items-center gap-2 mt-2">
-                  {selectedGame.isPublic ? (
-                    <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
-                      ● Public Experience
-                    </span>
-                  ) : (
-                    <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-red-500/20 text-red-400 border border-red-500/30">
-                      🔒 Private Experience
-                    </span>
-                  )}
-                  <span className="text-xs text-neutral-400">
-                    Maturity: Minimal • Ages 16+
-                  </span>
+                <h1 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">
+                  {selectedGame.title}
+                </h1>
+                <div className="text-xs text-neutral-400 mt-1">
+                  By <span className="text-blue-400 font-semibold">{selectedGame.creator || profile.username}</span>
                 </div>
               </div>
 
-              <div className="mt-6 space-y-3">
-                {/* Big Blue Play Button (Roblox authentic blue #0055ff) */}
+              <div className="pt-2">
                 <button
                   type="button"
                   onClick={() => onPlayGame(selectedGame)}
-                  className="w-full bg-[#0055ff] hover:bg-[#0047d9] active:bg-[#003dbb] text-white py-3.5 px-6 rounded-lg font-bold text-lg shadow-sm flex items-center justify-center gap-2 cursor-pointer transition-all hover:scale-[1.01]"
+                  className="w-full sm:w-auto px-8 py-3 bg-[#2a6839] hover:bg-[#327a44] text-white text-base font-bold rounded-lg shadow-lg flex items-center justify-center gap-2 cursor-pointer transition-colors"
                 >
-                  <Play className="w-6 h-6 fill-current" />
+                  <Play className="w-5 h-5 fill-current" />
+                  <span>Play</span>
                 </button>
-
-                {/* Interaction Row: Favorited, Notify, Ratings */}
-                <div className="flex items-center justify-between text-xs text-neutral-300 pt-1 px-1">
-                  {/* Favorited */}
-                  <button
-                    type="button"
-                    onClick={() => setIsFavorited(!isFavorited)}
-                    className="flex flex-col items-center gap-1 cursor-pointer group"
-                  >
-                    <Star
-                      className={`w-5 h-5 transition-colors ${
-                        isFavorited ? 'fill-amber-400 text-amber-400' : 'text-neutral-400 group-hover:text-white'
-                      }`}
-                    />
-                    <span className="text-[11px] font-medium text-neutral-400 group-hover:text-white">
-                      {isFavorited ? 'Favorited' : 'Favorite'}
-                    </span>
-                  </button>
-
-                  {/* Notify */}
-                  <button
-                    type="button"
-                    onClick={() => setIsNotified(!isNotified)}
-                    className="flex flex-col items-center gap-1 cursor-pointer group"
-                  >
-                    <Bell
-                      className={`w-5 h-5 transition-colors ${
-                        isNotified ? 'fill-blue-400 text-blue-400' : 'text-neutral-400 group-hover:text-white'
-                      }`}
-                    />
-                    <span className="text-[11px] font-medium text-neutral-400 group-hover:text-white">
-                      Notify
-                    </span>
-                  </button>
-
-                  {/* Ratings Bar: 👍 5 | 👎 0 */}
-                  <div className="flex flex-col items-center gap-1">
-                    <div className="flex items-center gap-3">
-                      <button
-                        type="button"
-                        onClick={() => handleToggleLike('like')}
-                        className={`flex items-center gap-1 font-semibold cursor-pointer ${
-                          userRating === 'like' ? 'text-emerald-400' : 'text-neutral-400 hover:text-white'
-                        }`}
-                      >
-                        <ThumbsUp className={`w-4 h-4 ${userRating === 'like' ? 'fill-current' : ''}`} />
-                        <span>{likesCount}</span>
-                      </button>
-
-                      <div className="w-[1px] h-3.5 bg-neutral-700" />
-
-                      <button
-                        type="button"
-                        onClick={() => handleToggleLike('dislike')}
-                        className={`flex items-center gap-1 font-semibold cursor-pointer ${
-                          userRating === 'dislike' ? 'text-red-400' : 'text-neutral-400 hover:text-white'
-                        }`}
-                      >
-                        <ThumbsDown className={`w-4 h-4 ${userRating === 'dislike' ? 'fill-current' : ''}`} />
-                        <span>{dislikesCount}</span>
-                      </button>
-                    </div>
-
-                    {/* Progress rating bar */}
-                    <div className="w-20 h-1 bg-neutral-800 rounded-full overflow-hidden">
-                      <div className="h-full bg-emerald-500" style={{ width: '92%' }} />
-                    </div>
-                  </div>
-                </div>
               </div>
-            </div>
-          </div>
-
-          {/* Sub Navigation Tabs: About, Store, Servers */}
-          <div className="border-b border-neutral-800 pt-4">
-            <div className="flex gap-10 text-sm font-semibold">
-              <button
-                type="button"
-                onClick={() => setExpSubTab('About')}
-                className={`pb-2.5 transition-colors cursor-pointer border-b-2 ${
-                  expSubTab === 'About'
-                    ? 'border-white text-white'
-                    : 'border-transparent text-neutral-400 hover:text-white'
-                }`}
-              >
-                About
-              </button>
-              <button
-                type="button"
-                onClick={() => setExpSubTab('Store')}
-                className={`pb-2.5 transition-colors cursor-pointer border-b-2 ${
-                  expSubTab === 'Store'
-                    ? 'border-white text-white'
-                    : 'border-transparent text-neutral-400 hover:text-white'
-                }`}
-              >
-                Store
-              </button>
-              <button
-                type="button"
-                onClick={() => setExpSubTab('Servers')}
-                className={`pb-2.5 transition-colors cursor-pointer border-b-2 ${
-                  expSubTab === 'Servers'
-                    ? 'border-white text-white'
-                    : 'border-transparent text-neutral-400 hover:text-white'
-                }`}
-              >
-                Servers
-              </button>
-            </div>
-          </div>
-
-          {/* About Tab Content */}
-          <div className="space-y-4 pt-1">
-            <h2 className="text-base font-bold text-white">Description</h2>
-            <p className="text-xs text-neutral-300 leading-relaxed max-w-3xl whitespace-pre-line">
-              {selectedGame.description || 'Welcome to Button RNG! Press the rainbow button to generate cash and unlock higher tiers. Can you reach $1.8QT? Built with full 3D interactive physics and custom Lua scripts.'}
-            </p>
-
-            <div>
-              <span className="inline-block px-3 py-1.5 bg-[#232528] text-neutral-300 text-xs font-semibold rounded-md border border-neutral-700/60">
-                Maturity: Minimal • Ages 16+
-              </span>
-            </div>
-
-            {/* Horizontal Stats Table */}
-            <div className="border-y border-neutral-800 py-4 mt-6">
-              <div className="grid grid-cols-3 sm:grid-cols-5 md:grid-cols-9 gap-4 text-center text-xs">
-                <div>
-                  <div className="text-[11px] text-neutral-400 mb-1">Active</div>
-                  <div className="font-bold text-white">{selectedGame.playingCount || 0}</div>
-                </div>
-                <div>
-                  <div className="text-[11px] text-neutral-400 mb-1">Favorites</div>
-                  <div className="font-bold text-white">4</div>
-                </div>
-                <div>
-                  <div className="text-[11px] text-neutral-400 mb-1">Visits</div>
-                  <div className="font-bold text-white">1,411</div>
-                </div>
-                <div>
-                  <div className="text-[11px] text-neutral-400 mb-1">Voice Chat</div>
-                  <div className="font-bold text-white">Supported</div>
-                </div>
-                <div>
-                  <div className="text-[11px] text-neutral-400 mb-1">Camera</div>
-                  <div className="font-bold text-white">Supported</div>
-                </div>
-                <div>
-                  <div className="text-[11px] text-neutral-400 mb-1">Created</div>
-                  <div className="font-bold text-white">6/2/2026</div>
-                </div>
-                <div>
-                  <div className="text-[11px] text-neutral-400 mb-1">Updated</div>
-                  <div className="font-bold text-white">9/30/2026</div>
-                </div>
-                <div>
-                  <div className="text-[11px] text-neutral-400 mb-1">Server Size</div>
-                  <div className="font-bold text-white">5</div>
-                </div>
-                <div>
-                  <div className="text-[11px] text-neutral-400 mb-1">Genre</div>
-                  <div className="font-bold text-white">Simulation</div>
-                </div>
-              </div>
-            </div>
-
-            {/* Bottom Actions: Edit in Studio + Report Abuse */}
-            <div className="flex items-center justify-between pt-2">
-              <button
-                type="button"
-                onClick={() => onOpenStudio(selectedGame)}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-[#232528] hover:bg-[#2c3035] text-white text-xs font-semibold rounded-md border border-neutral-700/60 transition-colors cursor-pointer"
-              >
-                <Hammer className="w-3.5 h-3.5 text-blue-400" />
-                <span>Open in Rovix Studio</span>
-              </button>
-
-              <span className="text-xs text-red-400 font-semibold hover:underline cursor-pointer">
-                Report Abuse
-              </span>
             </div>
           </div>
         </div>
@@ -490,41 +413,49 @@ export default function UserProfileView({
   }
 
   // =========================================================================
-  // VIEW 2: MAIN ROBLOX PROFILE PAGE (AUTHENTIC ROBLOX DARK THEME)
+  // VIEW 2: MAIN ROBLOX PROFILE PAGE
   // =========================================================================
   return (
-    <div className="flex-1 bg-[#191b1d] text-[#e3e5e8] overflow-y-auto min-h-screen select-none font-sans">
+    <div className="flex-1 bg-[#191b1d] text-[#e3e5e8] overflow-y-auto min-h-screen select-none font-sans pb-16">
       <div className="max-w-5xl mx-auto px-4 sm:px-6 py-6 space-y-6">
-        {/* ================================================================= */}
-        {/* 1. TOP BANNER WITH 3D AVATAR & 3D BUTTON (MATCHES DARK THEME)    */}
-        {/* ================================================================= */}
+        {/* Back Button if viewing another user */}
+        {!isOwnProfile && onBack && (
+          <button
+            type="button"
+            onClick={onBack}
+            className="flex items-center gap-2 text-xs font-bold text-neutral-400 hover:text-white transition-colors cursor-pointer"
+          >
+            <ArrowLeft className="w-4 h-4" />
+            <span>Back</span>
+          </button>
+        )}
+
+        {/* 1. TOP BANNER WITH 3D AVATAR & 3D BUTTON */}
         <div className="relative w-full h-64 sm:h-72 rounded-2xl bg-[#222429] border border-neutral-800/80 overflow-hidden flex items-center justify-center shadow-lg">
-          {/* Subtle dark ambient gradient vignette */}
           <div className="absolute inset-0 bg-gradient-to-b from-transparent via-transparent to-black/35 pointer-events-none" />
 
-          {/* Centered Avatar: 3D interactive (default) or 2D render */}
           <div className="w-full h-full relative z-10 flex items-center justify-center">
             {isBanner3D ? (
               <ProfileBanner3D
-                colors={colors}
-                shirtUrl={shirtUrl}
-                pantsUrl={pantsUrl}
-                backgroundUrl={backgroundUrl}
+                colors={activeColors}
+                shirtUrl={activeShirt}
+                pantsUrl={activePants}
+                backgroundUrl={activeBackground}
                 className="w-full h-full"
               />
             ) : (
               <div className="relative w-full h-full flex items-center justify-center overflow-hidden">
-                {backgroundUrl && (
+                {activeBackground && (
                   <img
-                    src={backgroundUrl}
+                    src={activeBackground}
                     alt="Profile Background"
                     className="absolute inset-0 w-full h-full object-cover object-center scale-105 filter brightness-75"
                   />
                 )}
                 <ProfileAvatar2D
-                  colors={colors}
-                  shirtUrl={shirtUrl}
-                  pantsUrl={pantsUrl}
+                  colors={activeColors}
+                  shirtUrl={activeShirt}
+                  pantsUrl={activePants}
                   height={230}
                   className="filter drop-shadow-[0_8px_16px_rgba(0,0,0,0.5)] relative z-10"
                 />
@@ -532,7 +463,6 @@ export default function UserProfileView({
             )}
           </div>
 
-          {/* 3D / 2D Toggle Button in top-right of banner */}
           <button
             type="button"
             onClick={() => setIsBanner3D(!isBanner3D)}
@@ -543,29 +473,26 @@ export default function UserProfileView({
           </button>
         </div>
 
-        {/* ================================================================= */}
-        {/* 2. PROFILE HEADER: AVATAR BUST ON LEFT + USERNAME + BUTTONS      */}
-        {/* ================================================================= */}
+        {/* 2. PROFILE HEADER: AVATAR BUST ON LEFT + USERNAME + BUTTONS & 3 DOTS */}
         <div className="relative -mt-16 sm:-mt-20 px-2 sm:px-4 z-20">
           <div className="flex flex-col sm:flex-row items-center sm:items-end gap-5">
-            {/* Circular Profile Icon with Blue User Badge */}
+            {/* Circular Profile Icon */}
             <div className="relative shrink-0 group">
               <div className="w-32 h-32 sm:w-36 sm:h-36 rounded-full bg-[#202225] border-4 border-[#191b1d] shadow-2xl relative overflow-hidden flex items-center justify-center ring-2 ring-neutral-700/80">
-                {backgroundUrl && (
+                {activeBackground && (
                   <img
-                    src={backgroundUrl}
+                    src={activeBackground}
                     alt="Icon Background"
                     className="absolute inset-0 w-full h-full object-cover object-center scale-110 filter brightness-70"
                   />
                 )}
                 <ProfileBust3D
-                  colors={colors}
-                  shirtUrl={shirtUrl}
+                  colors={activeColors}
+                  shirtUrl={activeShirt}
                   className="w-full h-full relative z-10"
                 />
               </div>
 
-              {/* Blue person badge on bottom-right of avatar circle */}
               <div
                 className="absolute bottom-1 right-1 w-7 h-7 rounded-full bg-[#00a2ff] border-2 border-[#191b1d] flex items-center justify-center text-white shadow-md z-20"
                 title="Online"
@@ -587,39 +514,164 @@ export default function UserProfileView({
                   </div>
                 </div>
 
-                {/* Right side buttons: Edit avatar, Edit profile, ... */}
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={onNavigateToAvatar}
-                    className="px-4 py-2 bg-[#2a2d32] hover:bg-[#34373d] text-white text-xs font-semibold rounded-lg border border-neutral-700/70 transition-colors cursor-pointer"
-                  >
-                    Edit avatar
-                  </button>
+                {/* Right side buttons & 3-dots button */}
+                <div className="flex items-center gap-2 relative">
+                  {isOwnProfile ? (
+                    <>
+                      <button
+                        type="button"
+                        onClick={onNavigateToAvatar}
+                        className="px-4 py-2 bg-[#2a2d32] hover:bg-[#34373d] text-white text-xs font-semibold rounded-lg border border-neutral-700/70 transition-colors cursor-pointer"
+                      >
+                        Edit avatar
+                      </button>
 
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setEditForm(profile);
-                      setIsEditingProfile(true);
-                    }}
-                    className="px-4 py-2 bg-[#2a2d32] hover:bg-[#34373d] text-white text-xs font-semibold rounded-lg border border-neutral-700/70 transition-colors cursor-pointer"
-                  >
-                    Edit profile
-                  </button>
+                      <button
+                        type="button"
+                        onClick={handleOpenEditProfile}
+                        className="px-4 py-2 bg-[#2a2d32] hover:bg-[#34373d] text-white text-xs font-semibold rounded-lg border border-neutral-700/70 transition-colors cursor-pointer"
+                      >
+                        Edit profile
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      {isFriend ? (
+                        <span className="px-4 py-2 bg-emerald-950/60 border border-emerald-600/50 text-emerald-400 text-xs font-bold rounded-lg flex items-center gap-1.5">
+                          <Check className="w-3.5 h-3.5" /> Friends
+                        </span>
+                      ) : isReqPending ? (
+                        <span className="px-4 py-2 bg-neutral-800 text-neutral-400 text-xs font-semibold rounded-lg">
+                          Request Sent
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => viewingUser && onAddFriend?.(viewingUser)}
+                          className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold rounded-lg flex items-center gap-1.5 transition-colors cursor-pointer shadow-sm"
+                        >
+                          <UserPlus className="w-3.5 h-3.5" />
+                          <span>Add Friend</span>
+                        </button>
+                      )}
 
-                  <button
-                    type="button"
-                    onClick={() => onOpenStudio()}
-                    className="p-2 bg-[#2a2d32] hover:bg-[#34373d] text-white rounded-lg border border-neutral-700/70 transition-colors cursor-pointer"
-                    title="Open Rovix Studio"
-                  >
-                    <MoreHorizontal className="w-4 h-4" />
-                  </button>
+                      <button
+                        type="button"
+                        onClick={() => viewingUser && onToggleFollow?.(viewingUser)}
+                        className={`px-3 py-2 rounded-lg text-xs font-semibold border transition-colors cursor-pointer flex items-center gap-1.5 ${
+                          isFollowing
+                            ? 'bg-neutral-800 text-amber-400 border-amber-500/50 hover:bg-neutral-700'
+                            : 'bg-[#2a2d32] text-white border-neutral-700 hover:bg-[#34373d]'
+                        }`}
+                      >
+                        <Heart className={`w-3.5 h-3.5 ${isFollowing ? 'fill-current text-amber-400' : ''}`} />
+                        <span>{isFollowing ? 'Following' : 'Follow'}</span>
+                      </button>
+                    </>
+                  )}
+
+                  {/* 3 DOTS BUTTON (MATCHES UPLOADED SCREENSHOT) */}
+                  <div className="relative" ref={moreMenuRef}>
+                    <button
+                      type="button"
+                      onClick={() => setShowMoreMenu(!showMoreMenu)}
+                      className={`p-2 rounded-lg border transition-all cursor-pointer ${
+                        showMoreMenu
+                          ? 'bg-[#34373d] text-white border-neutral-500 shadow-md'
+                          : 'bg-[#2a2d32] hover:bg-[#34373d] text-neutral-200 hover:text-white border-neutral-700/70'
+                      }`}
+                      title="More Options"
+                    >
+                      <MoreHorizontal className="w-4 h-4" />
+                    </button>
+
+                    {/* 3 DOTS FLOATING MENU */}
+                    {showMoreMenu && (
+                      <div className="absolute right-0 mt-1.5 w-48 bg-[#202225] border border-neutral-700 shadow-2xl rounded-lg py-1 z-50 animate-fade-in divide-y divide-neutral-800">
+                        {isOwnProfile ? (
+                          <div className="py-1">
+                            <button
+                              type="button"
+                              onClick={handleOpenEditProfile}
+                              className="w-full px-3.5 py-2 text-xs text-left text-neutral-200 hover:text-white hover:bg-[#2b2e34] flex items-center gap-2 transition-colors cursor-pointer"
+                            >
+                              <Pencil className="w-3.5 h-3.5 text-blue-400" />
+                              <span>Edit Profile</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setShowMoreMenu(false);
+                                onOpenStudio();
+                              }}
+                              className="w-full px-3.5 py-2 text-xs text-left text-neutral-200 hover:text-white hover:bg-[#2b2e34] flex items-center gap-2 transition-colors cursor-pointer"
+                            >
+                              <Hammer className="w-3.5 h-3.5 text-blue-400" />
+                              <span>Rovix Studio</span>
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="py-1">
+                            {isFriend ? (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setShowMoreMenu(false);
+                                  if (viewingUser) onRemoveFriend?.(viewingUser.uid);
+                                }}
+                                className="w-full px-3.5 py-2 text-xs text-left text-red-400 hover:bg-red-950/40 flex items-center gap-2 transition-colors cursor-pointer"
+                              >
+                                <UserMinus className="w-3.5 h-3.5" />
+                                <span>Remove Friend (Unadd)</span>
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setShowMoreMenu(false);
+                                  if (viewingUser) onAddFriend?.(viewingUser);
+                                }}
+                                className="w-full px-3.5 py-2 text-xs text-left text-neutral-200 hover:text-white hover:bg-[#2b2e34] flex items-center gap-2 transition-colors cursor-pointer"
+                              >
+                                <UserPlus className="w-3.5 h-3.5 text-blue-400" />
+                                <span>Add Friend</span>
+                              </button>
+                            )}
+
+                            {isFollowing ? (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setShowMoreMenu(false);
+                                  if (viewingUser) onToggleFollow?.(viewingUser);
+                                }}
+                                className="w-full px-3.5 py-2 text-xs text-left text-neutral-200 hover:text-white hover:bg-[#2b2e34] flex items-center gap-2 transition-colors cursor-pointer"
+                              >
+                                <Heart className="w-3.5 h-3.5 text-neutral-400" />
+                                <span>Unfollow</span>
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setShowMoreMenu(false);
+                                  if (viewingUser) onToggleFollow?.(viewingUser);
+                                }}
+                                className="w-full px-3.5 py-2 text-xs text-left text-neutral-200 hover:text-white hover:bg-[#2b2e34] flex items-center gap-2 transition-colors cursor-pointer"
+                              >
+                                <Heart className="w-3.5 h-3.5 text-amber-400" />
+                                <span>Follow</span>
+                              </button>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
 
-              {/* Stat Pills: [0 Friends] [0 Followers] [0 Following] (NO fake numbers!) */}
+              {/* Stat Pills */}
               <div className="flex items-center gap-2 pt-1 flex-wrap">
                 <span className="px-3.5 py-1.5 bg-[#232528] text-neutral-300 text-xs font-semibold rounded-full border border-neutral-700/60">
                   {profile.friendsCount} Friends
@@ -632,7 +684,7 @@ export default function UserProfileView({
                 </span>
               </div>
 
-              {/* Bio (clean, no fake bio) */}
+              {/* Bio */}
               {profile.bio ? (
                 <div className="pt-2 text-xs text-neutral-300 leading-relaxed">
                   <div className="whitespace-pre-line font-normal">
@@ -653,64 +705,72 @@ export default function UserProfileView({
           </div>
         </div>
 
-        {/* EDIT PROFILE MODAL (DARK THEME) */}
+        {/* EDIT PROFILE MODAL: DISPLAY NAME + BIO ONLY (NO USERNAME EDITING) */}
         {isEditingProfile && (
           <div className="fixed inset-0 bg-black/60 backdrop-blur-xs z-50 flex items-center justify-center p-4">
-            <div className="bg-[#202225] rounded-xl shadow-2xl max-w-md w-full p-6 space-y-4 border border-neutral-700 text-white">
+            <div className="bg-[#202225] rounded-xl shadow-2xl max-w-md w-full p-6 space-y-4 border border-neutral-700 text-white animate-scale-up">
               <div className="flex items-center justify-between border-b border-neutral-700 pb-3">
                 <h3 className="text-base font-bold text-white">Edit Profile</h3>
                 <button
                   type="button"
                   onClick={() => setIsEditingProfile(false)}
-                  className="p-1 hover:bg-neutral-800 rounded-md text-neutral-400 hover:text-white"
+                  className="p-1 hover:bg-neutral-800 rounded-md text-neutral-400 hover:text-white cursor-pointer"
                 >
                   <X className="w-4 h-4" />
                 </button>
               </div>
 
-              <div className="space-y-3 text-xs">
+              <div className="space-y-3.5 text-xs">
+                {/* 1. Display Name Input */}
                 <div>
                   <label className="block font-semibold text-neutral-300 mb-1">Display Name</label>
                   <input
                     type="text"
-                    value={editForm.displayName}
-                    onChange={(e) => setEditForm({ ...editForm, displayName: e.target.value })}
-                    className="w-full bg-[#181a1d] border border-neutral-700 px-3 py-2 rounded-lg text-white focus:outline-none focus:border-blue-500"
+                    value={editDisplayName}
+                    onChange={(e) => setEditDisplayName(e.target.value)}
+                    maxLength={32}
+                    placeholder="Enter your display name"
+                    className="w-full bg-[#181a1d] border border-neutral-700 px-3 py-2 rounded-lg text-white focus:outline-none focus:border-blue-500 transition-colors"
                   />
+                  <p className="text-[11px] text-neutral-400 mt-1">This is the name everyone sees on your profile and leaderboards.</p>
                 </div>
 
+                {/* 2. Username Handle: Read-only badge */}
                 <div>
                   <label className="block font-semibold text-neutral-300 mb-1">Username Handle</label>
-                  <input
-                    type="text"
-                    value={editForm.username}
-                    onChange={(e) => setEditForm({ ...editForm, username: e.target.value })}
-                    className="w-full bg-[#181a1d] border border-neutral-700 px-3 py-2 rounded-lg text-white focus:outline-none focus:border-blue-500"
-                  />
+                  <div className="w-full bg-[#141517] border border-neutral-800 px-3 py-2 rounded-lg text-neutral-400 font-mono select-none flex items-center justify-between">
+                    <span>{profile.username}</span>
+                    <span className="text-[10px] text-neutral-400 uppercase font-sans font-bold">Locked</span>
+                  </div>
+                  <p className="text-[11px] text-neutral-400 mt-1">Your unique handle is tied to your account credentials.</p>
                 </div>
 
+                {/* 3. About Me / Bio Input */}
                 <div>
-                  <label className="block font-semibold text-neutral-300 mb-1">About (Bio)</label>
+                  <label className="block font-semibold text-neutral-300 mb-1">About Me (Bio)</label>
                   <textarea
                     rows={4}
-                    value={editForm.bio}
-                    onChange={(e) => setEditForm({ ...editForm, bio: e.target.value })}
-                    className="w-full bg-[#181a1d] border border-neutral-700 p-2.5 rounded-lg text-white focus:outline-none focus:border-blue-500 leading-relaxed"
+                    value={editBio}
+                    onChange={(e) => setEditBio(e.target.value)}
+                    maxLength={300}
+                    placeholder="Write a brief bio about your avatar, games, or favorite experiences..."
+                    className="w-full bg-[#181a1d] border border-neutral-700 p-2.5 rounded-lg text-white focus:outline-none focus:border-blue-500 leading-relaxed transition-colors"
                   />
+                  <div className="text-right text-[10px] text-neutral-400 mt-0.5">{editBio.length}/300</div>
                 </div>
 
-                <div className="flex justify-end gap-2 pt-3">
+                <div className="flex justify-end gap-2 pt-3 border-t border-neutral-800">
                   <button
                     type="button"
                     onClick={() => setIsEditingProfile(false)}
-                    className="px-4 py-2 bg-[#2b2d31] hover:bg-[#34373c] text-neutral-300 font-semibold rounded-lg text-xs"
+                    className="px-4 py-2 bg-[#2b2d31] hover:bg-[#34373c] text-neutral-300 font-semibold rounded-lg text-xs cursor-pointer transition-colors"
                   >
                     Cancel
                   </button>
                   <button
                     type="button"
                     onClick={handleSaveProfile}
-                    className="px-4 py-2 bg-[#0055ff] hover:bg-[#0047d9] text-white font-semibold rounded-lg text-xs shadow"
+                    className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-lg text-xs shadow cursor-pointer transition-colors"
                   >
                     Save Changes
                   </button>
@@ -720,11 +780,9 @@ export default function UserProfileView({
           </div>
         )}
 
-        {/* ================================================================= */}
-        {/* 3. TABS: ABOUT & CREATIONS                                        */}
-        {/* ================================================================= */}
-        <div className="border-b border-neutral-800 pt-4">
-          <div className="flex justify-center gap-16 text-sm font-semibold">
+        {/* 3. SUB TABS: ABOUT VS CREATIONS */}
+        <div className="border-b border-neutral-800 pt-3">
+          <div className="flex items-center gap-8 text-sm font-semibold">
             <button
               type="button"
               onClick={() => setActiveTab('About')}
@@ -750,20 +808,21 @@ export default function UserProfileView({
           </div>
         </div>
 
-        {/* ================================================================= */}
-        {/* 4. TAB 1: ABOUT -> CURRENTLY WEARING (ONLY REAL EQUIPPED ITEMS)   */}
-        {/* ================================================================= */}
+        {/* 4. TAB 1: ABOUT -> CURRENTLY WEARING (BACKGROUND + SHIRT + PANTS) */}
         {activeTab === 'About' ? (
           <div className="space-y-4 pt-2">
             <h2 className="text-lg font-bold text-white">Currently Wearing</h2>
 
-            {/* Row of dark theme boxes matching the client */}
             <div className="relative">
               <div className="flex items-start gap-4 overflow-x-auto pb-4 pt-1 scrollbar-none">
                 {wearingItems.map((item) => (
                   <div
                     key={item.id}
                     onClick={() => {
+                      if (item.type === 'background') {
+                        if (isOwnProfile) onNavigateToAvatar();
+                        return;
+                      }
                       const mpItem = findMarketplaceItemByUrl(item.url) || {
                         id: item.id,
                         name: item.name,
@@ -786,58 +845,61 @@ export default function UserProfileView({
                     }}
                     className="flex flex-col items-start cursor-pointer group shrink-0 w-32 sm:w-36"
                   >
-                    {/* Square box with white dummy preview matching Rovix dark theme */}
+                    {/* Item Box */}
                     <div className="w-full aspect-square bg-[#1c1e22] group-hover:bg-[#23262b] rounded-xl border border-neutral-800 group-hover:border-neutral-600 overflow-hidden flex items-center justify-center p-1 transition-all shadow-sm relative">
-                      <ClothingDummyPreview
-                        clothingType={item.type}
-                        textureUrl={item.url}
-                        className="w-full h-full"
-                      />
+                      {item.type === 'background' ? (
+                        <div className="w-full h-full relative rounded-lg overflow-hidden flex items-center justify-center bg-[#131518]">
+                          <img
+                            src={item.url}
+                            alt="Background Preview"
+                            className="w-full h-full object-cover"
+                          />
+                          <span className="absolute bottom-1.5 left-1.5 px-1.5 py-0.5 bg-black/70 backdrop-blur-xs text-[9px] font-bold text-white rounded">
+                            Background
+                          </span>
+                        </div>
+                      ) : (
+                        <ClothingDummyPreview
+                          clothingType={item.type}
+                          textureUrl={item.url}
+                          className="w-full h-full"
+                        />
+                      )}
+
                       {item.isEquipped && (
-                        <div className="absolute top-2 right-2 w-2.5 h-2.5 rounded-full bg-emerald-500 ring-2 ring-[#232528]" title="Equipped" />
+                        <div
+                          className="absolute top-2 right-2 w-2.5 h-2.5 rounded-full bg-emerald-500 ring-2 ring-[#232528]"
+                          title="Equipped"
+                        />
                       )}
                     </div>
 
-                    {/* Title below box */}
+                    {/* Title */}
                     <span className="text-xs font-bold text-white mt-2 truncate w-full group-hover:text-blue-400 transition-colors">
                       {item.name}
                     </span>
                   </div>
                 ))}
 
-                {/* If user has no custom items equipped, show clean avatar editor link */}
                 {wearingItems.length === 0 && (
                   <div
-                    onClick={onNavigateToAvatar}
+                    onClick={() => isOwnProfile && onNavigateToAvatar()}
                     className="flex flex-col items-center justify-center w-36 aspect-square bg-[#232528] rounded-xl border border-neutral-800/80 cursor-pointer p-4 text-center hover:bg-[#2b2e34] transition-colors"
                   >
-                    <span className="text-xs font-semibold text-neutral-300">Equip Clothes in Avatar Editor</span>
+                    <span className="text-xs font-semibold text-neutral-300">
+                      {isOwnProfile ? 'Equip Items in Avatar Editor' : 'No custom items equipped'}
+                    </span>
                   </div>
-                )}
-
-                {/* Carousel arrow icon on the right */}
-                {wearingItems.length > 3 && (
-                  <button
-                    type="button"
-                    onClick={onNavigateToAvatar}
-                    className="self-center p-2 rounded-full bg-[#232528] hover:bg-[#2e3136] border border-neutral-700 shadow text-white shrink-0 cursor-pointer ml-2"
-                    title="View Avatar Items"
-                  >
-                    <ChevronRight className="w-4 h-4" />
-                  </button>
                 )}
               </div>
             </div>
           </div>
         ) : (
-          /* =============================================================== */
-          /* 5. TAB 2: CREATIONS -> EXPERIENCES (DARK THEME)                 */
-          /* =============================================================== */
+          /* 5. TAB 2: CREATIONS -> EXPERIENCES */
           <div className="space-y-4 pt-2">
             <div className="flex items-center justify-between">
               <h2 className="text-lg font-bold text-white">Experiences</h2>
 
-              {/* View toggle buttons: List view [ ▭ ] vs Grid view [ ☷ ] */}
               <div className="flex items-center gap-1.5">
                 <button
                   type="button"
@@ -866,15 +928,17 @@ export default function UserProfileView({
               </div>
             </div>
 
-            {/* LIST VIEW */}
-            {creationsViewMode === 'list' ? (
-              <div className="space-y-6">
+            {displayGames.length === 0 ? (
+              <div className="p-8 text-center bg-[#202225] rounded-xl border border-neutral-800 text-neutral-400 text-xs">
+                No experiences published yet.
+              </div>
+            ) : creationsViewMode === 'list' ? (
+              <div className="space-y-4">
                 {displayGames.map((game) => (
                   <div
                     key={game.id}
-                    className="flex flex-col sm:flex-row gap-6 items-start group"
+                    className="p-4 bg-[#202225] border border-neutral-800/90 rounded-2xl flex flex-col sm:flex-row gap-5 items-start sm:items-center justify-between shadow-sm group hover:border-neutral-700 transition-all"
                   >
-                    {/* Left: Large Thumbnail */}
                     <div
                       onClick={() => setSelectedGame(game)}
                       className="w-full sm:w-80 aspect-[16/10] bg-[#202225] rounded-xl overflow-hidden relative shadow-md border border-neutral-800 shrink-0 cursor-pointer group-hover:border-neutral-600 transition-colors"
@@ -892,9 +956,7 @@ export default function UserProfileView({
                       )}
                     </div>
 
-                    {/* Right: Title + Line + Stats */}
                     <div className="flex-1 w-full pt-1">
-                      {/* Title */}
                       <h3
                         onClick={() => setSelectedGame(game)}
                         className="text-xl sm:text-2xl font-bold text-white hover:text-blue-400 cursor-pointer tracking-tight transition-colors"
@@ -902,10 +964,8 @@ export default function UserProfileView({
                         {game.title}
                       </h3>
 
-                      {/* Horizontal line under title */}
                       <div className="border-b border-neutral-800 w-full my-3" />
 
-                      {/* Stats: Active & Visits */}
                       <div className="flex items-center gap-12 text-xs pt-1">
                         <div>
                           <div className="text-neutral-400 mb-0.5">Active</div>
@@ -918,32 +978,32 @@ export default function UserProfileView({
                         </div>
                       </div>
 
-                      {/* Quick Play & Studio links */}
                       <div className="flex items-center gap-3 mt-6">
                         <button
                           type="button"
                           onClick={() => setSelectedGame(game)}
-                          className="px-4 py-2 bg-[#0055ff] hover:bg-[#0047d9] text-white text-xs font-bold rounded-lg shadow-sm flex items-center gap-1.5 cursor-pointer transition-colors"
+                          className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold rounded-lg shadow-sm flex items-center gap-1.5 cursor-pointer transition-colors"
                         >
                           <Play className="w-3.5 h-3.5 fill-current" />
                           <span>View Experience</span>
                         </button>
 
-                        <button
-                          type="button"
-                          onClick={() => onOpenStudio(game)}
-                          className="px-3.5 py-2 bg-[#2a2d32] hover:bg-[#34373d] text-white text-xs font-semibold rounded-lg border border-neutral-700/70 flex items-center gap-1.5 cursor-pointer transition-colors"
-                        >
-                          <Hammer className="w-3.5 h-3.5 text-blue-400" />
-                          <span>Edit in Studio</span>
-                        </button>
+                        {isOwnProfile && (
+                          <button
+                            type="button"
+                            onClick={() => onOpenStudio(game)}
+                            className="px-3.5 py-2 bg-[#2a2d32] hover:bg-[#34373d] text-white text-xs font-semibold rounded-lg border border-neutral-700/70 flex items-center gap-1.5 cursor-pointer transition-colors"
+                          >
+                            <Hammer className="w-3.5 h-3.5 text-blue-400" />
+                            <span>Edit in Studio</span>
+                          </button>
+                        )}
                       </div>
                     </div>
                   </div>
                 ))}
               </div>
             ) : (
-              /* GRID VIEW */
               <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-5">
                 {displayGames.map((game) => (
                   <div
@@ -970,10 +1030,6 @@ export default function UserProfileView({
                       </div>
                       <div className="text-xs text-neutral-400 mt-0.5 truncate">
                         By {game.creator || profile.username}
-                      </div>
-                      <div className="flex items-center gap-4 text-xs mt-2 text-neutral-400">
-                        <span>Active: <strong className="text-white">{game.playingCount || 0}</strong></span>
-                        <span>Visits: <strong className="text-white">{(game as any).visitCount || (game.playingCount ? game.playingCount * 5 : 0)}</strong></span>
                       </div>
                     </div>
                   </div>

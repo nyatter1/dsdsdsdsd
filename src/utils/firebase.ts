@@ -17,6 +17,9 @@ import {
   deleteDoc,
   collection,
   query,
+  where,
+  limit,
+  orderBy,
   getDocs,
   onSnapshot,
 } from 'firebase/firestore';
@@ -71,6 +74,9 @@ export {
   deleteDoc,
   collection,
   query,
+  where,
+  limit,
+  orderBy,
   getDocs,
   onSnapshot,
 };
