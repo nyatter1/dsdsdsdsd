@@ -1,0 +1,61 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User profile with display name, bio, and avatar customizations",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "username": { "type": "string" },
+        "displayName": { "type": "string" },
+        "bio": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["uid", "username"]
+    },
+    "PublishedGame": {
+      "title": "PublishedGame",
+      "description": "Custom 3D game created in Rovix Studio",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "creator": { "type": "string" },
+        "isPublic": { "type": "boolean" },
+        "updatedAt": { "type": "number" }
+      },
+      "required": ["id", "title", "creator"]
+    },
+    "GamePlayer": {
+      "title": "GamePlayer",
+      "description": "Live active player in an experience with 3D coordinates, rotation, velocity, jumping state, and avatar colors/clothes",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "username": { "type": "string" },
+        "displayName": { "type": "string" },
+        "position": { "type": "array" },
+        "velocity": { "type": "array" },
+        "rotationY": { "type": "number" },
+        "isMoving": { "type": "boolean" },
+        "isGrounded": { "type": "boolean" },
+        "updatedAt": { "type": "number" }
+      },
+      "required": ["uid", "username", "position", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "User profile document"
+    },
+    "/published_games/{gameId}": {
+      "schema": "PublishedGame",
+      "description": "Public games catalog"
+    },
+    "/games/{gameId}/players/{playerId}": {
+      "schema": "GamePlayer",
+      "description": "Live game room player presence and movement"
+    }
+  }
+}

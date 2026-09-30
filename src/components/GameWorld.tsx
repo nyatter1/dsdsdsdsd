@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import * as THREE from 'three';
 import { Users, ChevronDown, ChevronUp, Sparkles, Play } from 'lucide-react';
 import { applyRobloxClothingUV } from '../utils/robloxClothingUV.ts';
@@ -7,20 +7,25 @@ import { SavedGame, StudioPart } from '../utils/gamesStorage.ts';
 import { LuaRuntime } from '../utils/luaEngine.ts';
 import RobloxGuiRenderer from './ui-engine/RobloxGuiRenderer.tsx';
 import { db, auth, doc, setDoc, deleteDoc, onSnapshot, collection } from '../utils/firebase.ts';
+import MultiplayerDebugOverlay, { MultiplayerDebugState } from './game/MultiplayerDebugOverlay.tsx';
 
 export interface ActiveServerPlayer {
-  uid: string;
+  uid: string; // The unique document ID / player session ID
+  accountUid?: string | null;
+  sessionId: string;
   username: string;
   displayName: string;
-  colors: AvatarColors;
-  shirtUrl: string | null;
-  pantsUrl: string | null;
   position: [number, number, number];
   velocity?: [number, number, number];
   rotationY: number;
   isMoving: boolean;
   isGrounded: boolean;
-  updatedAt: number;
+  colors: AvatarColors;
+  shirtUrl: string | null;
+  pantsUrl: string | null;
+  lastSeen: number;
+  joinedAt: number;
+  updatedAt?: number;
   ping?: number;
 }
 
@@ -329,24 +334,44 @@ export default function GameWorld({
   const [serverPlayers, setServerPlayers] = useState<ActiveServerPlayer[]>([]);
   const [isLeaderboardOpen, setIsLeaderboardOpen] = useState(true);
 
-  // My current user credentials (distinct session UID per browser tab/instance for multiplayer)
-  const gameId = game?.id || 'default_place';
+  // Game ID resolution (Phase 8: Ensure both players join the exact same room ID)
+  const gameId = game?.id || 'test_place';
+
+  // Unique session ID per browser tab/window to prevent overwrite when testing across tabs
+  const sessionIdRef = useRef<string>(
+    'sess_' + Math.random().toString(36).substring(2, 9) + '_' + Date.now().toString(36)
+  );
+  const playerId = sessionIdRef.current;
+  const joinedAtRef = useRef<number>(Date.now());
+
+  // User credentials
   const currentUserRaw = localStorage.getItem('rovix_current_user_v1');
   const currentUserObj = currentUserRaw ? JSON.parse(currentUserRaw) : null;
-  const myUid = useRef(() => {
-    try {
-      const stored = sessionStorage.getItem('rovix_session_uid_v3');
-      if (stored) return stored;
-      const gen = 'u_' + (currentUserObj?.username ? currentUserObj.username.toLowerCase() + '_' : '') + Math.random().toString(36).substring(2, 9);
-      sessionStorage.setItem('rovix_session_uid_v3', gen);
-      return gen;
-    } catch {
-      return 'u_' + Math.random().toString(36).substring(2, 9);
-    }
-  }).current();
-  const myUsername = currentUserObj?.username || 'Hayden67';
+  const accountUid = auth.currentUser?.uid || currentUserObj?.uid || null;
+  const myUsername = currentUserObj?.username || (accountUid ? 'Player' : `Guest_${playerId.substring(5, 9)}`);
   const myDisplayName = currentUserObj?.displayName || myUsername;
-  const lastPublishTime = useRef(0);
+
+  // Active multiplayer transport configuration (Phase 5)
+  // When running on Render Static Site or preview, this defaults to 'firebase'
+  const MULTIPLAYER_TRANSPORT: 'firebase' | 'websocket' =
+    (import.meta.env.VITE_MULTIPLAYER_TRANSPORT as 'firebase' | 'websocket') || 'firebase';
+
+  // Diagnostic states for Phase 6 Debug Panel
+  const [firebaseStatus, setFirebaseStatus] = useState<'CONNECTED' | 'ERROR' | 'CONNECTING'>('CONNECTING');
+  const [websocketStatus, setWebsocketStatus] = useState<'CONNECTED' | 'NOT CONFIGURED' | 'ERROR'>(
+    MULTIPLAYER_TRANSPORT === 'websocket' ? 'CONNECTED' : 'NOT CONFIGURED'
+  );
+  const lastFirebaseUpdateTimeRef = useRef<number | null>(null);
+  const lastRemotePlayerUpdateTimeRef = useRef<number | null>(null);
+  const [livePing, setLivePing] = useState<number>(20);
+
+  // Network transport refs
+  const wsRef = useRef<WebSocket | null>(null);
+  const bcRef = useRef<BroadcastChannel | null>(null);
+  const lastBroadcastSendTime = useRef(0);
+  const lastFirestoreMovementPush = useRef(0);
+  const lastMotionState = useRef({ isMoving: false, isGrounded: true });
+  const isWritingFirestoreRef = useRef(false);
 
   const sceneRef = useRef<THREE.Scene | null>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
@@ -386,83 +411,41 @@ export default function GameWorld({
     >
   >(new Map());
 
-  // Real-time network refs & live ping state
-  const wsRef = useRef<WebSocket | null>(null);
-  const bcRef = useRef<BroadcastChannel | null>(null);
-  const lastNetworkSendTime = useRef(0);
-  const lastFirestorePublish = useRef(0);
-  const [livePing, setLivePing] = useState<number>(18);
+  // Log room connection info (Phase 8 requirement)
+  useEffect(() => {
+    console.log(`[Multiplayer] Joining game: ${gameId}`);
+    console.log(`[Multiplayer] Player Session ID: ${playerId}`);
+    console.log(`[Multiplayer] Account UID: ${accountUid || 'Guest'}`);
+    console.log(`[Multiplayer] Active Transport: ${MULTIPLAYER_TRANSPORT}`);
+  }, [gameId, playerId, accountUid, MULTIPLAYER_TRANSPORT]);
 
-  // Fast-path remote player data update handler (instantly spawns and synchronizes remote 3D meshes)
-  const handleIncomingPlayerData = (p: Partial<ActiveServerPlayer> & { uid: string }) => {
-    if (!p || !p.uid || p.uid === myUid) return;
+  // Fast-path remote player data update handler (applies coordinates immediately to 3D mesh)
+  const handleIncomingPlayerData = useCallback((p: Partial<ActiveServerPlayer> & { uid: string }) => {
+    if (!p || !p.uid || p.uid === playerId) return;
+    lastRemotePlayerUpdateTimeRef.current = Date.now();
 
-    const px = Array.isArray(p.position) && typeof p.position[0] === 'number' ? p.position[0] : 0;
-    const py = Array.isArray(p.position) && typeof p.position[1] === 'number' ? p.position[1] : 3.0;
-    const pz = Array.isArray(p.position) && typeof p.position[2] === 'number' ? p.position[2] : 0;
-    const pvx = Array.isArray(p.velocity) && typeof p.velocity[0] === 'number' ? p.velocity[0] : 0;
-    const pvy = Array.isArray(p.velocity) && typeof p.velocity[1] === 'number' ? p.velocity[1] : 0;
-    const pvz = Array.isArray(p.velocity) && typeof p.velocity[2] === 'number' ? p.velocity[2] : 0;
-    const protY = typeof p.rotationY === 'number' ? p.rotationY : Math.PI;
-
-    let rData = remoteMeshesRef.current.get(p.uid);
-    if (!rData && sceneRef.current) {
-      const fullPlayer: ActiveServerPlayer = {
-        uid: p.uid,
-        username: p.username || 'Player',
-        displayName: p.displayName || p.username || 'Player',
-        colors: p.colors || {
-          head: '#f5cd2f',
-          torso: '#0d69ac',
-          leftArm: '#f5cd2f',
-          rightArm: '#f5cd2f',
-          leftLeg: '#a0a528',
-          rightLeg: '#a0a528',
-        },
-        shirtUrl: p.shirtUrl || null,
-        pantsUrl: p.pantsUrl || null,
-        position: [px, py, pz],
-        velocity: [pvx, pvy, pvz],
-        rotationY: protY,
-        isMoving: Boolean(p.isMoving),
-        isGrounded: p.isGrounded !== false,
-        updatedAt: Date.now(),
-      };
-      const created = createRemotePlayerGroup(fullPlayer);
-      created.group.position.set(px, py, pz);
-      created.group.rotation.y = protY;
-      sceneRef.current.add(created.group);
-      rData = {
-        group: created.group,
-        leftArm: created.leftArm,
-        rightArm: created.rightArm,
-        leftLeg: created.leftLeg,
-        rightLeg: created.rightLeg,
-        shirtMeshes: created.shirtMeshes,
-        pantsMeshes: created.pantsMeshes,
-        targetPos: new THREE.Vector3(px, py, pz),
-        targetVel: new THREE.Vector3(pvx, pvy, pvz),
-        targetRotY: protY,
-        isMoving: Boolean(p.isMoving),
-        isGrounded: p.isGrounded !== false,
-        walkTime: 0,
-        lastPacketTime: performance.now(),
-        loadedShirtUrl: p.shirtUrl || null,
-        loadedPantsUrl: p.pantsUrl || null,
-        updateClothing: created.updateClothing,
-        updateColors: created.updateColors,
-      };
-      remoteMeshesRef.current.set(p.uid, rData);
-    } else if (rData) {
-      const newPos = new THREE.Vector3(px, py, pz);
-      if (rData.group.position.distanceTo(newPos) > 25) {
-        rData.group.position.copy(newPos);
+    const rData = remoteMeshesRef.current.get(p.uid);
+    if (rData) {
+      if (Array.isArray(p.position)) {
+        const newPos = new THREE.Vector3(p.position[0], p.position[1], p.position[2]);
+        // Snap instantly only if teleported or very far
+        if (rData.group.position.distanceTo(newPos) > 25) {
+          rData.group.position.copy(newPos);
+        }
+        rData.targetPos.copy(newPos);
       }
-      rData.targetPos.copy(newPos);
-      rData.targetVel.set(pvx, pvy, pvz);
-      rData.targetRotY = protY;
-      if (typeof p.isMoving === 'boolean') rData.isMoving = p.isMoving;
-      if (typeof p.isGrounded === 'boolean') rData.isGrounded = p.isGrounded;
+      if (Array.isArray(p.velocity)) {
+        rData.targetVel.set(p.velocity[0], p.velocity[1], p.velocity[2]);
+      }
+      if (typeof p.rotationY === 'number') {
+        rData.targetRotY = p.rotationY;
+      }
+      if (typeof p.isMoving === 'boolean') {
+        rData.isMoving = p.isMoving;
+      }
+      if (typeof p.isGrounded === 'boolean') {
+        rData.isGrounded = p.isGrounded;
+      }
       rData.lastPacketTime = performance.now();
 
       if (p.shirtUrl !== undefined || p.pantsUrl !== undefined) {
@@ -472,133 +455,136 @@ export default function GameWorld({
         rData.updateColors(p.colors);
       }
     }
+  }, [playerId]);
 
-    // Update React serverPlayers state
-    setServerPlayers((prev) => {
-      const idx = prev.findIndex((sp) => sp.uid === p.uid);
-      if (idx >= 0) {
-        const copy = [...prev];
-        copy[idx] = { ...copy[idx], ...p, updatedAt: Date.now() };
-        return copy;
-      } else {
-        return [
-          ...prev,
-          {
-            uid: p.uid,
-            username: p.username || 'Player',
-            displayName: p.displayName || p.username || 'Player',
-            colors: p.colors || {
-              head: '#f5cd2f',
-              torso: '#0d69ac',
-              leftArm: '#f5cd2f',
-              rightArm: '#f5cd2f',
-              leftLeg: '#a0a528',
-              rightLeg: '#a0a528',
-            },
-            shirtUrl: p.shirtUrl || null,
-            pantsUrl: p.pantsUrl || null,
-            position: [px, py, pz],
-            velocity: [pvx, pvy, pvz],
-            rotationY: protY,
-            isMoving: Boolean(p.isMoving),
-            isGrounded: p.isGrounded !== false,
-            updatedAt: Date.now(),
-          },
-        ];
-      }
-    });
-  };
-
-  const handlePlayerLeft = (uid: string) => {
+  const handlePlayerLeft = useCallback((uid: string) => {
+    console.log(`[Multiplayer] Player left or timed out: ${uid}`);
     const rData = remoteMeshesRef.current.get(uid);
     if (rData && sceneRef.current) {
       sceneRef.current.remove(rData.group);
       remoteMeshesRef.current.delete(uid);
     }
     setServerPlayers((prev) => prev.filter((p) => p.uid !== uid));
-  };
+  }, []);
 
-  // High-performance real-time synchronization: WebSocket + BroadcastChannel + Firestore
+  // Proper asynchronous Firestore player presence writer (Phase 1 & 2)
+  const pushPlayerPresence = useCallback(
+    async (isHeartbeat: boolean) => {
+      if (!db || !playerId) return;
+      if (isWritingFirestoreRef.current) return;
+      isWritingFirestoreRef.current = true;
+
+      const now = Date.now();
+      const playerDoc: ActiveServerPlayer = {
+        uid: playerId,
+        accountUid,
+        sessionId: playerId,
+        username: myUsername,
+        displayName: myDisplayName,
+        position: [
+          playerState.current.position.x,
+          playerState.current.position.y,
+          playerState.current.position.z,
+        ],
+        velocity: [
+          playerState.current.velocity.x,
+          playerState.current.velocity.y,
+          playerState.current.velocity.z,
+        ],
+        rotationY: playerState.current.rotationY,
+        isMoving: playerState.current.isMoving,
+        isGrounded: playerState.current.isGrounded,
+        colors,
+        shirtUrl,
+        pantsUrl,
+        lastSeen: now,
+        joinedAt: joinedAtRef.current,
+        ping: livePing,
+      };
+
+      try {
+        await setDoc(doc(db, 'games', gameId, 'players', playerId), playerDoc, { merge: true });
+        lastFirebaseUpdateTimeRef.current = now;
+        setFirebaseStatus('CONNECTED');
+      } catch (error) {
+        console.error('[Multiplayer] Firestore write failed:', error);
+        setFirebaseStatus('ERROR');
+      } finally {
+        isWritingFirestoreRef.current = false;
+      }
+    },
+    [gameId, playerId, accountUid, myUsername, myDisplayName, colors, shirtUrl, pantsUrl, livePing]
+  );
+
+  // Core Multiplayer Presence & Synchronization Lifecycle
   useEffect(() => {
     let isMounted = true;
     let ws: WebSocket | null = null;
     let bc: BroadcastChannel | null = null;
     let pingInterval: any = null;
 
-    const myInitialPayload: ActiveServerPlayer = {
-      uid: myUid,
-      username: myUsername,
-      displayName: myDisplayName,
-      colors,
-      shirtUrl,
-      pantsUrl,
-      position: [0, 3.0, 0],
-      velocity: [0, 0, 0],
-      rotationY: Math.PI,
-      isMoving: false,
-      isGrounded: true,
-      updatedAt: Date.now(),
-      ping: livePing,
-    };
-
-    // 1. BroadcastChannel for zero-latency multi-tab sync
+    // 1. BroadcastChannel for instantaneous multi-tab sync in the same browser
     try {
       bc = new BroadcastChannel(`rovix_mp_sync_${gameId}`);
       bcRef.current = bc;
       bc.onmessage = (event) => {
         if (!isMounted) return;
         const data = event.data;
-        if ((data?.type === 'move' || data?.type === 'announce') && data.player) {
+        if (data?.type === 'move' && data.player) {
           handleIncomingPlayerData(data.player);
-        } else if (data?.type === 'join' && data.player) {
-          handleIncomingPlayerData(data.player);
-          // Respond so the newly joined player in the other tab immediately knows about us
-          bc?.postMessage({
-            type: 'announce',
-            player: {
-              uid: myUid,
-              username: myUsername,
-              displayName: myDisplayName,
-              colors,
-              shirtUrl,
-              pantsUrl,
-              position: [playerState.current.position.x, playerState.current.position.y, playerState.current.position.z],
-              velocity: [playerState.current.velocity.x, playerState.current.velocity.y, playerState.current.velocity.z],
-              rotationY: playerState.current.rotationY,
-              isMoving: playerState.current.isMoving,
-              isGrounded: playerState.current.isGrounded,
-              updatedAt: Date.now(),
-              ping: livePing,
-            },
+          setServerPlayers((prev) => {
+            const idx = prev.findIndex((sp) => sp.uid === data.player.uid);
+            if (idx >= 0) {
+              const copy = [...prev];
+              copy[idx] = { ...copy[idx], ...data.player, lastSeen: Date.now() };
+              return copy;
+            } else {
+              return [...prev, { ...data.player, lastSeen: Date.now() }];
+            }
           });
         } else if (data?.type === 'leave' && data.uid) {
           handlePlayerLeft(data.uid);
         }
       };
+    } catch (e) {
+      console.warn('[Multiplayer] BroadcastChannel not available in this environment:', e);
+    }
 
-      // Announce initial join on BroadcastChannel
-      bc.postMessage({ type: 'join', player: myInitialPayload });
-    } catch {}
-
-    // 2. WebSocket connection to server
-    const connectWs = () => {
+    // 2. WebSocket transport ONLY when explicitly configured (Phase 5)
+    if (MULTIPLAYER_TRANSPORT === 'websocket') {
       try {
-        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const url = `${protocol}//${window.location.host}/ws`;
-        ws = new WebSocket(url);
+        const wsUrl = (import.meta.env.VITE_WS_URL as string) ||
+          `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws`;
+        ws = new WebSocket(wsUrl);
         wsRef.current = ws;
 
         ws.onopen = () => {
           if (!isMounted) return;
+          setWebsocketStatus('CONNECTED');
           ws?.send(
             JSON.stringify({
               type: 'join',
               gameId,
-              player: myInitialPayload,
+              player: {
+                uid: playerId,
+                accountUid,
+                sessionId: playerId,
+                username: myUsername,
+                displayName: myDisplayName,
+                colors,
+                shirtUrl,
+                pantsUrl,
+                position: [0, 3.0, 0],
+                velocity: [0, 0, 0],
+                rotationY: Math.PI,
+                isMoving: false,
+                isGrounded: true,
+                lastSeen: Date.now(),
+                joinedAt: joinedAtRef.current,
+              },
             })
           );
 
-          // Ping server every 2 seconds for real measured ping
           pingInterval = setInterval(() => {
             if (ws?.readyState === WebSocket.OPEN) {
               ws.send(JSON.stringify({ type: 'ping', clientTime: performance.now() }));
@@ -617,17 +603,12 @@ export default function GameWorld({
             } else if (msg.type === 'player_moved') {
               handleIncomingPlayerData({
                 uid: msg.uid,
-                username: msg.player?.username,
-                displayName: msg.player?.displayName,
-                colors: msg.player?.colors,
-                shirtUrl: msg.player?.shirtUrl,
-                pantsUrl: msg.player?.pantsUrl,
                 position: msg.position,
                 velocity: msg.velocity,
                 rotationY: msg.rotationY,
                 isMoving: msg.isMoving,
                 isGrounded: msg.isGrounded,
-                updatedAt: msg.timestamp || Date.now(),
+                lastSeen: msg.timestamp || Date.now(),
               });
             } else if (msg.type === 'player_left' && msg.uid) {
               handlePlayerLeft(msg.uid);
@@ -638,57 +619,187 @@ export default function GameWorld({
           } catch {}
         };
 
-        ws.onclose = () => {
-          if (isMounted) {
-            setTimeout(connectWs, 3000);
-          }
+        ws.onerror = () => {
+          setWebsocketStatus('ERROR');
         };
-      } catch {}
-    };
 
-    connectWs();
+        ws.onclose = () => {
+          setWebsocketStatus('NOT CONFIGURED');
+        };
+      } catch (err) {
+        console.warn('[Multiplayer] WebSocket setup error:', err);
+        setWebsocketStatus('NOT CONFIGURED');
+      }
+    } else {
+      setWebsocketStatus('NOT CONFIGURED');
+    }
 
-    // 3. Firestore Snapshot Sync (cross-session & cross-server guarantee)
+    // 3. Firebase Firestore Real-Time Presence & Listener (Phase 1)
     let unsubFirestore: (() => void) | null = null;
     if (db) {
       try {
         const playersColRef = collection(db, 'games', gameId, 'players');
-        unsubFirestore = onSnapshot(playersColRef, (snapshot) => {
-          const now = Date.now();
-          snapshot.forEach((docSnap) => {
-            const p = docSnap.data() as ActiveServerPlayer;
-            if (p && p.uid !== myUid && p.updatedAt && Math.abs(now - p.updatedAt) < 30000) {
-              handleIncomingPlayerData(p);
-            }
-          });
-        });
-      } catch {}
+
+        // Real-time snapshot listener
+        unsubFirestore = onSnapshot(
+          playersColRef,
+          (snapshot) => {
+            if (!isMounted) return;
+            setFirebaseStatus('CONNECTED');
+            lastFirebaseUpdateTimeRef.current = Date.now();
+            const activeList: ActiveServerPlayer[] = [];
+            const now = Date.now();
+
+            snapshot.forEach((docSnap) => {
+              const p = docSnap.data() as ActiveServerPlayer;
+              if (!p || !p.uid) return;
+              if (p.uid === playerId) return; // Ignore our own player ID
+
+              const seen = p.lastSeen || (p as any).updatedAt || 0;
+              // Accept players active within the last 10 seconds
+              if (now - seen < 10000) {
+                activeList.push(p);
+                handleIncomingPlayerData(p);
+              }
+            });
+
+            // Evict remote player models that disappeared from the room
+            remoteMeshesRef.current.forEach((rData, uid) => {
+              if (!activeList.some((ap) => ap.uid === uid) && uid !== playerId) {
+                console.log(`[Multiplayer] Evicting player not in active list: ${uid}`);
+                sceneRef.current?.remove(rData.group);
+                remoteMeshesRef.current.delete(uid);
+              }
+            });
+
+            // Reconcile serverPlayers list (self + active remote players)
+            setServerPlayers([
+              {
+                uid: playerId,
+                accountUid,
+                sessionId: playerId,
+                username: myUsername,
+                displayName: myDisplayName,
+                colors,
+                shirtUrl,
+                pantsUrl,
+                position: [
+                  playerState.current.position.x,
+                  playerState.current.position.y,
+                  playerState.current.position.z,
+                ],
+                velocity: [
+                  playerState.current.velocity.x,
+                  playerState.current.velocity.y,
+                  playerState.current.velocity.z,
+                ],
+                rotationY: playerState.current.rotationY,
+                isMoving: playerState.current.isMoving,
+                isGrounded: playerState.current.isGrounded,
+                lastSeen: now,
+                joinedAt: joinedAtRef.current,
+                ping: livePing,
+              },
+              ...activeList,
+            ]);
+          },
+          (error) => {
+            console.error('[Multiplayer] Firestore onSnapshot error:', error);
+            setFirebaseStatus('ERROR');
+          }
+        );
+      } catch (err) {
+        console.error('[Multiplayer] Error setting up Firestore listener:', err);
+        setFirebaseStatus('ERROR');
+      }
     }
 
+    // 4. Initial presence publish
+    pushPlayerPresence(true);
+
+    // 5. Presence Heartbeat every ~1000ms (Phase 2)
+    const heartbeatTimer = setInterval(() => {
+      if (!isMounted) return;
+      pushPlayerPresence(true);
+    }, 1000);
+
+    // 6. Stale player eviction timer every 2000ms (Phase 2)
+    const staleEvictionTimer = setInterval(() => {
+      if (!isMounted) return;
+      const now = Date.now();
+      const timeoutLimit = 8000; // 8 seconds stale cutoff
+
+      setServerPlayers((prev) => {
+        const fresh = prev.filter((p) => {
+          if (p.uid === playerId) return true;
+          const seen = p.lastSeen || (p as any).updatedAt || 0;
+          const isStale = now - seen > timeoutLimit;
+          if (isStale) {
+            console.log(`[Multiplayer] Stale player timed out: ${p.displayName || p.username} (${p.uid})`);
+            const rData = remoteMeshesRef.current.get(p.uid);
+            if (rData && sceneRef.current) {
+              sceneRef.current.remove(rData.group);
+              remoteMeshesRef.current.delete(p.uid);
+            }
+            return false;
+          }
+          return true;
+        });
+        return fresh;
+      });
+    }, 2000);
+
+    // Cleanup when leaving game or unmounting
     return () => {
       isMounted = false;
-      clearInterval(pingInterval);
+      clearInterval(heartbeatTimer);
+      clearInterval(staleEvictionTimer);
+      if (pingInterval) clearInterval(pingInterval);
+
       if (ws) {
         try {
           ws.close();
         } catch {}
         wsRef.current = null;
       }
+
       if (bc) {
         try {
-          bc.postMessage({ type: 'leave', uid: myUid });
+          bc.postMessage({ type: 'leave', uid: playerId });
           bc.close();
         } catch {}
         bcRef.current = null;
       }
+
       if (unsubFirestore) {
         unsubFirestore();
       }
-      try {
-        deleteDoc(doc(db, 'games', gameId, 'players', myUid));
-      } catch {}
+
+      // Normal departure: cleanly delete player presence document (Phase 2)
+      if (db && playerId) {
+        deleteDoc(doc(db, 'games', gameId, 'players', playerId))
+          .then(() => {
+            console.log(`[Multiplayer] Cleanly removed player document on exit: ${playerId}`);
+          })
+          .catch((err) => {
+            console.error('[Multiplayer] Failed to delete player document on exit:', err);
+          });
+      }
     };
-  }, [gameId, myUid, myUsername, myDisplayName, colors, shirtUrl, pantsUrl]);
+  }, [
+    gameId,
+    playerId,
+    accountUid,
+    myUsername,
+    myDisplayName,
+    colors,
+    shirtUrl,
+    pantsUrl,
+    MULTIPLAYER_TRANSPORT,
+    pushPlayerPresence,
+    handleIncomingPlayerData,
+    handlePlayerLeft,
+  ]);
 
   // Scattered ragdoll limbs on death
   const scatteredRagdollPartsRef = useRef<
@@ -1523,10 +1634,12 @@ export default function GameWorld({
 
       // --- MULTIPLAYER REAL-TIME POSITION BROADCASTING & DEAD RECKONING LERP ---
       const nowPerf = performance.now();
-      if (nowPerf - lastNetworkSendTime.current > 33) {
-        lastNetworkSendTime.current = nowPerf;
+      if (nowPerf - lastBroadcastSendTime.current > 33) {
+        lastBroadcastSendTime.current = nowPerf;
         const movePayload: ActiveServerPlayer = {
-          uid: myUid,
+          uid: playerId,
+          accountUid,
+          sessionId: playerId,
           username: myUsername,
           displayName: myDisplayName,
           colors,
@@ -1537,12 +1650,23 @@ export default function GameWorld({
           rotationY: state.rotationY,
           isMoving: state.isMoving,
           isGrounded: state.isGrounded,
-          updatedAt: Date.now(),
+          lastSeen: Date.now(),
+          joinedAt: joinedAtRef.current,
           ping: livePing,
         };
 
-        // 1. Send via WebSocket (high-frequency low-latency)
-        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        // 1. BroadcastChannel (instantaneous inter-tab in same browser)
+        if (bcRef.current) {
+          try {
+            bcRef.current.postMessage({
+              type: 'move',
+              player: movePayload,
+            });
+          } catch {}
+        }
+
+        // 2. WebSocket (only if explicitly configured and open)
+        if (MULTIPLAYER_TRANSPORT === 'websocket' && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
           try {
             wsRef.current.send(
               JSON.stringify({
@@ -1558,31 +1682,27 @@ export default function GameWorld({
             );
           } catch {}
         }
+      }
 
-        // 2. BroadcastChannel (instantaneous inter-tab in same browser)
-        if (bcRef.current) {
-          try {
-            bcRef.current.postMessage({
-              type: 'move',
-              player: movePayload,
-            });
-          } catch {}
-        }
+      // 3. Movement push to Firestore (throttled to 400-500ms when moving or on state change)
+      const nowMs = Date.now();
+      const motionStateChanged =
+        state.isMoving !== lastMotionState.current.isMoving ||
+        state.isGrounded !== lastMotionState.current.isGrounded;
 
-        // 3. Firestore (throttled to 400ms for persistence)
-        const nowMs = Date.now();
-        if (db && myUid && nowMs - lastFirestorePublish.current > 400) {
-          lastFirestorePublish.current = nowMs;
-          try {
-            setDoc(doc(db, 'games', gameId, 'players', myUid), movePayload, { merge: true });
-          } catch {}
+      if (state.isMoving || !state.isGrounded || motionStateChanged) {
+        const throttleLimit = motionStateChanged ? 250 : 500;
+        if (nowMs - lastFirestoreMovementPush.current > throttleLimit) {
+          lastFirestoreMovementPush.current = nowMs;
+          lastMotionState.current = { isMoving: state.isMoving, isGrounded: state.isGrounded };
+          pushPlayerPresence(false);
         }
       }
 
       // Render & smoothly interpolate remote players with dead reckoning & exponential damping
       if (sceneRef.current) {
         serverPlayers.forEach((p) => {
-          if (!p || !p.uid || p.uid === myUid) return;
+          if (!p || !p.uid || p.uid === playerId) return;
 
           const px = Array.isArray(p.position) && typeof p.position[0] === 'number' ? p.position[0] : 0;
           const py = Array.isArray(p.position) && typeof p.position[1] === 'number' ? p.position[1] : 3.0;
@@ -1594,6 +1714,7 @@ export default function GameWorld({
 
           let rData = remoteMeshesRef.current.get(p.uid);
           if (!rData) {
+            console.log(`[Multiplayer] Spawning 3D remote player model: ${p.displayName || p.username} (${p.uid})`);
             const created = createRemotePlayerGroup(p);
             created.group.position.set(px, py, pz);
             created.group.rotation.y = protY;
@@ -1621,7 +1742,7 @@ export default function GameWorld({
             remoteMeshesRef.current.set(p.uid, rData);
           }
 
-          // 1. Dead reckoning prediction between network ticks
+          // 1. Dead reckoning prediction between network ticks (Phase 4)
           if (!rData.isGrounded) {
             rData.targetVel.y += gravity * dt;
             rData.targetPos.y += rData.targetVel.y * dt;
@@ -1671,7 +1792,7 @@ export default function GameWorld({
 
         // Cleanup left remote players
         remoteMeshesRef.current.forEach((rData, uid) => {
-          if (!serverPlayers.some((sp) => sp && sp.uid === uid) || uid === myUid) {
+          if (!serverPlayers.some((sp) => sp && sp.uid === uid) || uid === playerId) {
             sceneRef.current?.remove(rData.group);
             remoteMeshesRef.current.delete(uid);
           }
@@ -1815,6 +1936,32 @@ export default function GameWorld({
         <RobloxGuiRenderer root={activeRuntime.bridge.player.PlayerGui} />
       )}
 
+      {/* Development Multiplayer Diagnostics Panel (Phase 6) */}
+      <MultiplayerDebugOverlay
+        debugState={{
+          isConnected:
+            firebaseStatus === 'CONNECTED' ||
+            (MULTIPLAYER_TRANSPORT === 'websocket' && websocketStatus === 'CONNECTED'),
+          transport:
+            MULTIPLAYER_TRANSPORT === 'websocket' && websocketStatus === 'CONNECTED'
+              ? 'websocket'
+              : 'firebase',
+          myPlayerId: playerId,
+          firebaseStatus,
+          lastFirebaseUpdateTime: lastFirebaseUpdateTimeRef.current,
+          lastRemotePlayerUpdateTime: lastRemotePlayerUpdateTimeRef.current,
+          websocketStatus,
+          players: serverPlayers,
+          localPlayerPosition: playerGroupRef.current
+            ? [
+                playerGroupRef.current.position.x,
+                playerGroupRef.current.position.y,
+                playerGroupRef.current.position.z,
+              ]
+            : [0, 3, 0],
+        }}
+      />
+
       {/* Top Left Menu Icon */}
       <div className="absolute top-3 left-4 flex items-center gap-2 z-20">
         <button
@@ -1863,7 +2010,7 @@ export default function GameWorld({
           {isLeaderboardOpen && (
             <div className="divide-y divide-neutral-800/80 max-h-60 overflow-y-auto">
               {serverPlayers.map((p) => {
-                const isMe = p.uid === myUid;
+                const isMe = p.uid === playerId;
                 return (
                   <div
                     key={p.uid}
