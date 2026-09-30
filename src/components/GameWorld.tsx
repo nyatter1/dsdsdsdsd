@@ -70,6 +70,7 @@ export interface RemotePlayerGroupData {
   rightArm: THREE.Group;
   leftLeg: THREE.Group;
   rightLeg: THREE.Group;
+  nameTag: THREE.Mesh;
   shirtMeshes: THREE.Mesh[];
   pantsMeshes: THREE.Mesh[];
   updateClothing: (newShirtUrl: string | null, newPantsUrl: string | null) => void;
@@ -301,6 +302,7 @@ function createRemotePlayerGroup(p: ActiveServerPlayer): RemotePlayerGroupData {
     rightArm: rightArmPivot,
     leftLeg: leftLegPivot,
     rightLeg: rightLegPivot,
+    nameTag: tagMesh,
     shirtMeshes,
     pantsMeshes,
     updateClothing: (newShirtUrl, newPantsUrl) => {
@@ -394,6 +396,7 @@ export default function GameWorld({
         rightArm: THREE.Group;
         leftLeg: THREE.Group;
         rightLeg: THREE.Group;
+        nameTag: THREE.Mesh;
         shirtMeshes: THREE.Mesh[];
         pantsMeshes: THREE.Mesh[];
         targetPos: THREE.Vector3;
@@ -411,6 +414,20 @@ export default function GameWorld({
     >
   >(new Map());
 
+  // Ref to always maintain live active players list for animation loop without stale closures
+  const serverPlayersRef = useRef<ActiveServerPlayer[]>([]);
+
+  const updateServerPlayersList = useCallback(
+    (updater: ActiveServerPlayer[] | ((prev: ActiveServerPlayer[]) => ActiveServerPlayer[])) => {
+      setServerPlayers((prev) => {
+        const next = typeof updater === 'function' ? updater(prev) : updater;
+        serverPlayersRef.current = next;
+        return next;
+      });
+    },
+    []
+  );
+
   // Log room connection info (Phase 8 requirement)
   useEffect(() => {
     console.log(`[Multiplayer] Joining game: ${gameId}`);
@@ -419,16 +436,55 @@ export default function GameWorld({
     console.log(`[Multiplayer] Active Transport: ${MULTIPLAYER_TRANSPORT}`);
   }, [gameId, playerId, accountUid, MULTIPLAYER_TRANSPORT]);
 
-  // Fast-path remote player data update handler (applies coordinates immediately to 3D mesh)
+  // Fast-path remote player data update handler (creates/updates 3D avatar immediately)
   const handleIncomingPlayerData = useCallback((p: Partial<ActiveServerPlayer> & { uid: string }) => {
     if (!p || !p.uid || p.uid === playerId) return;
     lastRemotePlayerUpdateTimeRef.current = Date.now();
 
-    const rData = remoteMeshesRef.current.get(p.uid);
-    if (rData) {
+    const px = Array.isArray(p.position) && typeof p.position[0] === 'number' ? p.position[0] : 0;
+    const py = Array.isArray(p.position) && typeof p.position[1] === 'number' ? p.position[1] : 3.0;
+    const pz = Array.isArray(p.position) && typeof p.position[2] === 'number' ? p.position[2] : 0;
+    const protY = typeof p.rotationY === 'number' ? p.rotationY : Math.PI;
+
+    let rData = remoteMeshesRef.current.get(p.uid);
+    if (!rData) {
+      if (sceneRef.current) {
+        console.log(`[Multiplayer] Instantly creating 3D avatar model for player: ${p.displayName || p.username} (${p.uid}) at [${px.toFixed(1)}, ${py.toFixed(1)}, ${pz.toFixed(1)}]`);
+        const created = createRemotePlayerGroup(p as ActiveServerPlayer);
+        created.group.position.set(px, py, pz);
+        created.group.rotation.y = protY;
+        sceneRef.current.add(created.group);
+
+        rData = {
+          group: created.group,
+          leftArm: created.leftArm,
+          rightArm: created.rightArm,
+          leftLeg: created.leftLeg,
+          rightLeg: created.rightLeg,
+          nameTag: created.nameTag,
+          shirtMeshes: created.shirtMeshes,
+          pantsMeshes: created.pantsMeshes,
+          targetPos: new THREE.Vector3(px, py, pz),
+          targetVel: new THREE.Vector3(
+            p.velocity?.[0] || 0,
+            p.velocity?.[1] || 0,
+            p.velocity?.[2] || 0
+          ),
+          targetRotY: protY,
+          isMoving: Boolean(p.isMoving),
+          isGrounded: p.isGrounded !== false,
+          walkTime: 0,
+          lastPacketTime: performance.now(),
+          loadedShirtUrl: p.shirtUrl || null,
+          loadedPantsUrl: p.pantsUrl || null,
+          updateClothing: created.updateClothing,
+          updateColors: created.updateColors,
+        };
+        remoteMeshesRef.current.set(p.uid, rData);
+      }
+    } else {
       if (Array.isArray(p.position)) {
-        const newPos = new THREE.Vector3(p.position[0], p.position[1], p.position[2]);
-        // Snap instantly only if teleported or very far
+        const newPos = new THREE.Vector3(px, py, pz);
         if (rData.group.position.distanceTo(newPos) > 25) {
           rData.group.position.copy(newPos);
         }
@@ -464,8 +520,8 @@ export default function GameWorld({
       sceneRef.current.remove(rData.group);
       remoteMeshesRef.current.delete(uid);
     }
-    setServerPlayers((prev) => prev.filter((p) => p.uid !== uid));
-  }, []);
+    updateServerPlayersList((prev) => prev.filter((p) => p.uid !== uid));
+  }, [updateServerPlayersList]);
 
   // Proper asynchronous Firestore player presence writer (Phase 1 & 2)
   const pushPlayerPresence = useCallback(
@@ -532,7 +588,7 @@ export default function GameWorld({
         const data = event.data;
         if (data?.type === 'move' && data.player) {
           handleIncomingPlayerData(data.player);
-          setServerPlayers((prev) => {
+          updateServerPlayersList((prev) => {
             const idx = prev.findIndex((sp) => sp.uid === data.player.uid);
             if (idx >= 0) {
               const copy = [...prev];
@@ -673,7 +729,7 @@ export default function GameWorld({
             });
 
             // Reconcile serverPlayers list (self + active remote players)
-            setServerPlayers([
+            updateServerPlayersList([
               {
                 uid: playerId,
                 accountUid,
@@ -729,7 +785,7 @@ export default function GameWorld({
       const now = Date.now();
       const timeoutLimit = 8000; // 8 seconds stale cutoff
 
-      setServerPlayers((prev) => {
+      updateServerPlayersList((prev) => {
         const fresh = prev.filter((p) => {
           if (p.uid === playerId) return true;
           const seen = p.lastSeen || (p as any).updatedAt || 0;
@@ -1701,7 +1757,8 @@ export default function GameWorld({
 
       // Render & smoothly interpolate remote players with dead reckoning & exponential damping
       if (sceneRef.current) {
-        serverPlayers.forEach((p) => {
+        // 1. Spawning / sync target from live active server players
+        serverPlayersRef.current.forEach((p) => {
           if (!p || !p.uid || p.uid === playerId) return;
 
           const px = Array.isArray(p.position) && typeof p.position[0] === 'number' ? p.position[0] : 0;
@@ -1725,6 +1782,7 @@ export default function GameWorld({
               rightArm: created.rightArm,
               leftLeg: created.leftLeg,
               rightLeg: created.rightLeg,
+              nameTag: created.nameTag,
               shirtMeshes: created.shirtMeshes,
               pantsMeshes: created.pantsMeshes,
               targetPos: new THREE.Vector3(px, py, pz),
@@ -1734,15 +1792,27 @@ export default function GameWorld({
               isGrounded: p.isGrounded !== false,
               walkTime: 0,
               lastPacketTime: performance.now(),
-              loadedShirtUrl: p.shirtUrl,
-              loadedPantsUrl: p.pantsUrl,
+              loadedShirtUrl: p.shirtUrl || null,
+              loadedPantsUrl: p.pantsUrl || null,
               updateClothing: created.updateClothing,
               updateColors: created.updateColors,
             };
             remoteMeshesRef.current.set(p.uid, rData);
+          } else {
+            // Update target coordinates
+            rData.targetPos.set(px, py, pz);
+            rData.targetVel.set(pvx, pvy, pvz);
+            rData.targetRotY = protY;
+            rData.isMoving = Boolean(p.isMoving);
+            rData.isGrounded = p.isGrounded !== false;
+            if (p.shirtUrl !== rData.loadedShirtUrl || p.pantsUrl !== rData.loadedPantsUrl) {
+              rData.loadedShirtUrl = p.shirtUrl || null;
+              rData.loadedPantsUrl = p.pantsUrl || null;
+              rData.updateClothing(p.shirtUrl || null, p.pantsUrl || null);
+            }
           }
 
-          // 1. Dead reckoning prediction between network ticks (Phase 4)
+          // 2. Dead reckoning prediction between network ticks (Phase 4)
           if (!rData.isGrounded) {
             rData.targetVel.y += gravity * dt;
             rData.targetPos.y += rData.targetVel.y * dt;
@@ -1757,17 +1827,22 @@ export default function GameWorld({
             rData.targetPos.z += rData.targetVel.z * dt;
           }
 
-          // 2. Exponential smooth LERP (frame-rate independent 60 FPS)
+          // 3. Exponential smooth LERP (frame-rate independent 60 FPS)
           const posAlpha = Math.min(1.0, 1 - Math.exp(-22 * dt));
           rData.group.position.lerp(rData.targetPos, posAlpha);
 
-          // 3. Smooth angle LERP
+          // 4. Smooth angle LERP
           let diffRot = rData.targetRotY - rData.group.rotation.y;
           while (diffRot < -Math.PI) diffRot += Math.PI * 2;
           while (diffRot > Math.PI) diffRot -= Math.PI * 2;
           rData.group.rotation.y += diffRot * posAlpha;
 
-          // 4. Smooth limb animation (Iconic Roblox Jump & Walk)
+          // 5. Always face billboard name tag to viewer camera
+          if (rData.nameTag) {
+            rData.nameTag.quaternion.copy(camera.quaternion);
+          }
+
+          // 6. Smooth limb animation (Iconic Roblox Jump & Walk)
           if (!rData.isGrounded) {
             const jumpArmAngle = -Math.PI;
             rData.leftArm.rotation.x = THREE.MathUtils.lerp(rData.leftArm.rotation.x, jumpArmAngle, posAlpha * 1.5);
@@ -1792,7 +1867,7 @@ export default function GameWorld({
 
         // Cleanup left remote players
         remoteMeshesRef.current.forEach((rData, uid) => {
-          if (!serverPlayers.some((sp) => sp && sp.uid === uid) || uid === playerId) {
+          if (!serverPlayersRef.current.some((sp) => sp && sp.uid === uid) || uid === playerId) {
             sceneRef.current?.remove(rData.group);
             remoteMeshesRef.current.delete(uid);
           }
