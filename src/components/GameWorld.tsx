@@ -70,7 +70,7 @@ export interface RemotePlayerGroupData {
   rightArm: THREE.Group;
   leftLeg: THREE.Group;
   rightLeg: THREE.Group;
-  nameTag: THREE.Mesh;
+  nameTag: THREE.Object3D;
   shirtMeshes: THREE.Mesh[];
   pantsMeshes: THREE.Mesh[];
   updateClothing: (newShirtUrl: string | null, newPantsUrl: string | null) => void;
@@ -266,35 +266,46 @@ function createRemotePlayerGroup(p: ActiveServerPlayer): RemotePlayerGroupData {
   if (p.shirtUrl) applyTextureToMeshes(p.shirtUrl, shirtMeshes);
   if (p.pantsUrl) applyTextureToMeshes(p.pantsUrl, pantsMeshes);
 
-  // 3D Billboard Name Tag
+  // 3D Clean Roblox Name Tag: Clean white text with crisp black outline, no background box, perfectly centered above head
   const tagCanvas = document.createElement('canvas');
   tagCanvas.width = 512;
   tagCanvas.height = 128;
   const tagCtx = tagCanvas.getContext('2d')!;
-  tagCtx.fillStyle = 'rgba(18, 20, 24, 0.82)';
-  tagCtx.beginPath();
-  tagCtx.roundRect(16, 16, 480, 96, 24);
-  tagCtx.fill();
-  tagCtx.lineWidth = 4;
-  tagCtx.strokeStyle = 'rgba(255, 255, 255, 0.25)';
-  tagCtx.stroke();
+  tagCtx.clearRect(0, 0, 512, 128); // Transparent background
 
-  tagCtx.fillStyle = '#ffffff';
-  tagCtx.font = 'bold 38px sans-serif';
+  // Clean username only as requested
+  const usernameText = p.username || p.displayName || 'Player';
+  tagCtx.font = '900 48px "Segoe UI", Arial, sans-serif';
   tagCtx.textAlign = 'center';
   tagCtx.textBaseline = 'middle';
-  tagCtx.fillText(p.displayName || p.username, 256, 48);
 
-  tagCtx.fillStyle = '#a0a5aa';
-  tagCtx.font = '500 24px sans-serif';
-  tagCtx.fillText(`@${p.username}`, 256, 86);
+  // Thick crisp black stroke (outline)
+  tagCtx.lineJoin = 'round';
+  tagCtx.miterLimit = 2;
+  tagCtx.strokeStyle = '#000000';
+  tagCtx.lineWidth = 10;
+  tagCtx.strokeText(usernameText, 256, 64);
+
+  // Pure white text fill
+  tagCtx.fillStyle = '#ffffff';
+  tagCtx.fillText(usernameText, 256, 64);
 
   const tagTex = new THREE.CanvasTexture(tagCanvas);
-  const tagGeo = new THREE.PlaneGeometry(3.6, 0.9);
-  const tagMat = new THREE.MeshBasicMaterial({ map: tagTex, transparent: true, side: THREE.DoubleSide });
-  const tagMesh = new THREE.Mesh(tagGeo, tagMat);
-  tagMesh.position.set(0, 2.7, 0);
-  group.add(tagMesh);
+  tagTex.colorSpace = THREE.SRGBColorSpace;
+  tagTex.generateMipmaps = true;
+
+  // Use THREE.Sprite so it is inherently billboarded, never rotated or tilted, always centered and straight
+  const tagMat = new THREE.SpriteMaterial({
+    map: tagTex,
+    transparent: true,
+    depthTest: true,
+    depthWrite: false,
+  });
+  const tagSprite = new THREE.Sprite(tagMat);
+  tagSprite.center.set(0.5, 0.5);
+  tagSprite.position.set(0, 2.75, 0); // Directly above the head, centered
+  tagSprite.scale.set(3.4, 0.85, 1);
+  group.add(tagSprite);
 
   return {
     group,
@@ -302,7 +313,7 @@ function createRemotePlayerGroup(p: ActiveServerPlayer): RemotePlayerGroupData {
     rightArm: rightArmPivot,
     leftLeg: leftLegPivot,
     rightLeg: rightLegPivot,
-    nameTag: tagMesh,
+    nameTag: tagSprite,
     shirtMeshes,
     pantsMeshes,
     updateClothing: (newShirtUrl, newPantsUrl) => {
@@ -396,9 +407,10 @@ export default function GameWorld({
         rightArm: THREE.Group;
         leftLeg: THREE.Group;
         rightLeg: THREE.Group;
-        nameTag: THREE.Mesh;
+        nameTag: THREE.Object3D;
         shirtMeshes: THREE.Mesh[];
         pantsMeshes: THREE.Mesh[];
+        baseNetworkPos: THREE.Vector3;
         targetPos: THREE.Vector3;
         targetVel: THREE.Vector3;
         targetRotY: number;
@@ -444,6 +456,9 @@ export default function GameWorld({
     const px = Array.isArray(p.position) && typeof p.position[0] === 'number' ? p.position[0] : 0;
     const py = Array.isArray(p.position) && typeof p.position[1] === 'number' ? p.position[1] : 3.0;
     const pz = Array.isArray(p.position) && typeof p.position[2] === 'number' ? p.position[2] : 0;
+    const pvx = Array.isArray(p.velocity) && typeof p.velocity[0] === 'number' ? p.velocity[0] : 0;
+    const pvy = Array.isArray(p.velocity) && typeof p.velocity[1] === 'number' ? p.velocity[1] : 0;
+    const pvz = Array.isArray(p.velocity) && typeof p.velocity[2] === 'number' ? p.velocity[2] : 0;
     const protY = typeof p.rotationY === 'number' ? p.rotationY : Math.PI;
 
     let rData = remoteMeshesRef.current.get(p.uid);
@@ -464,12 +479,9 @@ export default function GameWorld({
           nameTag: created.nameTag,
           shirtMeshes: created.shirtMeshes,
           pantsMeshes: created.pantsMeshes,
+          baseNetworkPos: new THREE.Vector3(px, py, pz),
           targetPos: new THREE.Vector3(px, py, pz),
-          targetVel: new THREE.Vector3(
-            p.velocity?.[0] || 0,
-            p.velocity?.[1] || 0,
-            p.velocity?.[2] || 0
-          ),
+          targetVel: new THREE.Vector3(pvx, pvy, pvz),
           targetRotY: protY,
           isMoving: Boolean(p.isMoving),
           isGrounded: p.isGrounded !== false,
@@ -485,13 +497,14 @@ export default function GameWorld({
     } else {
       if (Array.isArray(p.position)) {
         const newPos = new THREE.Vector3(px, py, pz);
-        if (rData.group.position.distanceTo(newPos) > 25) {
+        if (rData.group.position.distanceTo(newPos) > 20) {
           rData.group.position.copy(newPos);
         }
+        rData.baseNetworkPos.copy(newPos);
         rData.targetPos.copy(newPos);
       }
       if (Array.isArray(p.velocity)) {
-        rData.targetVel.set(p.velocity[0], p.velocity[1], p.velocity[2]);
+        rData.targetVel.set(pvx, pvy, pvz);
       }
       if (typeof p.rotationY === 'number') {
         rData.targetRotY = p.rotationY;
@@ -1740,14 +1753,14 @@ export default function GameWorld({
         }
       }
 
-      // 3. Movement push to Firestore (throttled to 400-500ms when moving or on state change)
+      // 3. Movement push to Firestore (faster 180ms cadence when moving or on state change for high smoothness)
       const nowMs = Date.now();
       const motionStateChanged =
         state.isMoving !== lastMotionState.current.isMoving ||
         state.isGrounded !== lastMotionState.current.isGrounded;
 
       if (state.isMoving || !state.isGrounded || motionStateChanged) {
-        const throttleLimit = motionStateChanged ? 250 : 500;
+        const throttleLimit = motionStateChanged ? 120 : 180;
         if (nowMs - lastFirestoreMovementPush.current > throttleLimit) {
           lastFirestoreMovementPush.current = nowMs;
           lastMotionState.current = { isMoving: state.isMoving, isGrounded: state.isGrounded };
@@ -1785,6 +1798,7 @@ export default function GameWorld({
               nameTag: created.nameTag,
               shirtMeshes: created.shirtMeshes,
               pantsMeshes: created.pantsMeshes,
+              baseNetworkPos: new THREE.Vector3(px, py, pz),
               targetPos: new THREE.Vector3(px, py, pz),
               targetVel: new THREE.Vector3(pvx, pvy, pvz),
               targetRotY: protY,
@@ -1800,6 +1814,7 @@ export default function GameWorld({
             remoteMeshesRef.current.set(p.uid, rData);
           } else {
             // Update target coordinates
+            rData.baseNetworkPos.set(px, py, pz);
             rData.targetPos.set(px, py, pz);
             rData.targetVel.set(pvx, pvy, pvz);
             rData.targetRotY = protY;
@@ -1811,46 +1826,55 @@ export default function GameWorld({
               rData.updateClothing(p.shirtUrl || null, p.pantsUrl || null);
             }
           }
+        });
 
-          // 2. Dead reckoning prediction between network ticks (Phase 4)
+        // 2. High-precision interpolation & dead reckoning for smooth movement
+        const nowTime = performance.now();
+        remoteMeshesRef.current.forEach((rData, uid) => {
+          // Time since last packet in seconds
+          const timeSincePacket = Math.max(0, (nowTime - rData.lastPacketTime) / 1000);
+          // Limit dead reckoning extrapolation to 200ms to avoid overshoot
+          const extrapolateTime = Math.min(timeSincePacket, 0.20);
+
+          const targetX = rData.baseNetworkPos.x + (rData.isMoving ? rData.targetVel.x * extrapolateTime : 0);
+          const targetZ = rData.baseNetworkPos.z + (rData.isMoving ? rData.targetVel.z * extrapolateTime : 0);
+          let targetY = rData.baseNetworkPos.y;
+
           if (!rData.isGrounded) {
-            rData.targetVel.y += gravity * dt;
-            rData.targetPos.y += rData.targetVel.y * dt;
-            if (rData.targetPos.y < 3.0) {
-              rData.targetPos.y = 3.0;
-              rData.targetVel.y = 0;
-              rData.isGrounded = true;
-            }
-          }
-          if (rData.isMoving) {
-            rData.targetPos.x += rData.targetVel.x * dt;
-            rData.targetPos.z += rData.targetVel.z * dt;
+            targetY = Math.max(
+              3.0,
+              rData.baseNetworkPos.y + rData.targetVel.y * extrapolateTime + 0.5 * gravity * extrapolateTime * extrapolateTime
+            );
           }
 
-          // 3. Exponential smooth LERP (frame-rate independent 60 FPS)
-          const posAlpha = Math.min(1.0, 1 - Math.exp(-22 * dt));
-          rData.group.position.lerp(rData.targetPos, posAlpha);
+          const targetVector = new THREE.Vector3(targetX, targetY, targetZ);
 
-          // 4. Smooth angle LERP
+          // If very far (teleport or respawn), snap instantly
+          if (rData.group.position.distanceTo(targetVector) > 20) {
+            rData.group.position.copy(targetVector);
+          } else {
+            // Silky smooth exponential damping
+            const posAlpha = Math.min(1.0, 1 - Math.exp(-15 * dt));
+            rData.group.position.lerp(targetVector, posAlpha);
+          }
+
+          // Smooth angle LERP with wrap-around
           let diffRot = rData.targetRotY - rData.group.rotation.y;
           while (diffRot < -Math.PI) diffRot += Math.PI * 2;
           while (diffRot > Math.PI) diffRot -= Math.PI * 2;
-          rData.group.rotation.y += diffRot * posAlpha;
+          const rotAlpha = Math.min(1.0, 1 - Math.exp(-14 * dt));
+          rData.group.rotation.y += diffRot * rotAlpha;
 
-          // 5. Always face billboard name tag to viewer camera
-          if (rData.nameTag) {
-            rData.nameTag.quaternion.copy(camera.quaternion);
-          }
-
-          // 6. Smooth limb animation (Iconic Roblox Jump & Walk)
+          // Smooth limb animation (Iconic Roblox Jump & Walk)
+          const animAlpha = Math.min(1.0, 1 - Math.exp(-14 * dt));
           if (!rData.isGrounded) {
             const jumpArmAngle = -Math.PI;
-            rData.leftArm.rotation.x = THREE.MathUtils.lerp(rData.leftArm.rotation.x, jumpArmAngle, posAlpha * 1.5);
-            rData.rightArm.rotation.x = THREE.MathUtils.lerp(rData.rightArm.rotation.x, jumpArmAngle, posAlpha * 1.5);
-            rData.leftLeg.rotation.x = THREE.MathUtils.lerp(rData.leftLeg.rotation.x, 0.28, posAlpha);
-            rData.rightLeg.rotation.x = THREE.MathUtils.lerp(rData.rightLeg.rotation.x, -0.28, posAlpha);
+            rData.leftArm.rotation.x = THREE.MathUtils.lerp(rData.leftArm.rotation.x, jumpArmAngle, animAlpha * 1.5);
+            rData.rightArm.rotation.x = THREE.MathUtils.lerp(rData.rightArm.rotation.x, jumpArmAngle, animAlpha * 1.5);
+            rData.leftLeg.rotation.x = THREE.MathUtils.lerp(rData.leftLeg.rotation.x, 0.28, animAlpha);
+            rData.rightLeg.rotation.x = THREE.MathUtils.lerp(rData.rightLeg.rotation.x, -0.28, animAlpha);
           } else if (rData.isMoving) {
-            rData.walkTime += dt * 11.5;
+            rData.walkTime += dt * 11.0;
             const armSwing = Math.sin(rData.walkTime) * 0.75;
             const legSwing = Math.sin(rData.walkTime) * 0.85;
             rData.leftArm.rotation.x = -armSwing;
@@ -1858,10 +1882,10 @@ export default function GameWorld({
             rData.leftLeg.rotation.x = legSwing;
             rData.rightLeg.rotation.x = -legSwing;
           } else {
-            rData.leftArm.rotation.x = THREE.MathUtils.lerp(rData.leftArm.rotation.x, 0, posAlpha);
-            rData.rightArm.rotation.x = THREE.MathUtils.lerp(rData.rightArm.rotation.x, 0, posAlpha);
-            rData.leftLeg.rotation.x = THREE.MathUtils.lerp(rData.leftLeg.rotation.x, 0, posAlpha);
-            rData.rightLeg.rotation.x = THREE.MathUtils.lerp(rData.rightLeg.rotation.x, 0, posAlpha);
+            rData.leftArm.rotation.x = THREE.MathUtils.lerp(rData.leftArm.rotation.x, 0, animAlpha);
+            rData.rightArm.rotation.x = THREE.MathUtils.lerp(rData.rightArm.rotation.x, 0, animAlpha);
+            rData.leftLeg.rotation.x = THREE.MathUtils.lerp(rData.leftLeg.rotation.x, 0, animAlpha);
+            rData.rightLeg.rotation.x = THREE.MathUtils.lerp(rData.rightLeg.rotation.x, 0, animAlpha);
           }
         });
 
