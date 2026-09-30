@@ -305,7 +305,7 @@ export default function ProfilePage({
                     <div className="flex items-center justify-between text-[11px] text-neutral-400 pt-1 border-t border-neutral-800/60">
                       <span className="flex items-center gap-1 text-emerald-400 font-semibold">
                         <Users className="w-3 h-3" />
-                        <span>{(game as any).playingCount || 12} playing</span>
+                        <span>{(game as any).playingCount || 0} playing</span>
                       </span>
 
                       <button

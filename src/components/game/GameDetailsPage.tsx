@@ -129,7 +129,7 @@ export default function GameDetailsPage({
             <div className="flex flex-wrap items-center justify-center md:justify-start gap-3 text-xs text-neutral-400 pt-1">
               <div className="flex items-center gap-1.5 bg-[#20232a] px-3 py-1.5 rounded-xl border border-neutral-800">
                 <Users className="w-3.5 h-3.5 text-emerald-400" />
-                <span>{(activeGame as any).playingCount || 12} playing</span>
+                <span>{(activeGame as any).playingCount || 0} playing</span>
               </div>
               <div className="flex items-center gap-1.5 bg-[#20232a] px-3 py-1.5 rounded-xl border border-neutral-800">
                 <Calendar className="w-3.5 h-3.5 text-blue-400" />

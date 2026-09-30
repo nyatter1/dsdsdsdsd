@@ -16,10 +16,12 @@ export interface ActiveServerPlayer {
   shirtUrl: string | null;
   pantsUrl: string | null;
   position: [number, number, number];
+  velocity?: [number, number, number];
   rotationY: number;
   isMoving: boolean;
   isGrounded: boolean;
   updatedAt: number;
+  ping?: number;
 }
 
 interface GameWorldProps {
@@ -57,13 +59,19 @@ interface WorldBox {
   canCollide: boolean;
 }
 
-function createRemotePlayerGroup(p: ActiveServerPlayer): {
+export interface RemotePlayerGroupData {
   group: THREE.Group;
   leftArm: THREE.Group;
   rightArm: THREE.Group;
   leftLeg: THREE.Group;
   rightLeg: THREE.Group;
-} {
+  shirtMeshes: THREE.Mesh[];
+  pantsMeshes: THREE.Mesh[];
+  updateClothing: (newShirtUrl: string | null, newPantsUrl: string | null) => void;
+  updateColors: (newColors: AvatarColors) => void;
+}
+
+function createRemotePlayerGroup(p: ActiveServerPlayer): RemotePlayerGroupData {
   const group = new THREE.Group();
   const c = p.colors || {
     head: '#f5cd2f',
@@ -81,121 +89,183 @@ function createRemotePlayerGroup(p: ActiveServerPlayer): {
   }
   group.rotation.y = typeof p.rotationY === 'number' ? p.rotationY : Math.PI;
 
-  // Head
-  const headGeo = new THREE.SphereGeometry(0.6, 16, 16);
-  const headMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(c.head || '#f5cd2f'), roughness: 0.35 });
-  const headMesh = new THREE.Mesh(headGeo, headMat);
-  headMesh.position.set(0, 1.2, 0);
-  headMesh.castShadow = true;
-  group.add(headMesh);
-
-  // Face texture
-  const canvas = document.createElement('canvas');
-  canvas.width = 128;
-  canvas.height = 128;
-  const ctx = canvas.getContext('2d')!;
-  ctx.fillStyle = c.head || '#f5cd2f';
-  ctx.fillRect(0, 0, 128, 128);
-  ctx.fillStyle = '#111';
-  ctx.beginPath();
-  ctx.arc(38, 48, 8, 0, Math.PI * 2);
-  ctx.arc(90, 48, 8, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.beginPath();
-  ctx.arc(64, 76, 20, 0, Math.PI);
-  ctx.lineWidth = 5;
-  ctx.strokeStyle = '#111';
-  ctx.stroke();
-
-  const faceTex = new THREE.CanvasTexture(canvas);
-  const faceGeo = new THREE.PlaneGeometry(0.7, 0.7);
-  const faceMat = new THREE.MeshBasicMaterial({ map: faceTex, transparent: true });
-  const faceMesh = new THREE.Mesh(faceGeo, faceMat);
-  faceMesh.position.set(0, 1.2, 0.58);
-  group.add(faceMesh);
+  const createBodyMat = (hex: string) =>
+    new THREE.MeshStandardMaterial({
+      color: new THREE.Color(hex),
+      roughness: 0.35,
+      metalness: 0.04,
+    });
 
   // Torso
-  const torsoGeo = new THREE.BoxGeometry(2, 2, 1);
-  const torsoMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(c.torso || '#0d69ac'), roughness: 0.35 });
-  const torsoMesh = new THREE.Mesh(torsoGeo, torsoMat);
-  torsoMesh.position.set(0, 0, 0);
+  const torsoMesh = new THREE.Mesh(new THREE.BoxGeometry(2, 2, 1), createBodyMat(c.torso));
   torsoMesh.castShadow = true;
   group.add(torsoMesh);
 
-  // Left Arm
-  const leftArmGroup = new THREE.Group();
-  leftArmGroup.position.set(-1.5, 0.9, 0);
-  const armGeo = new THREE.BoxGeometry(1, 2, 1);
-  const leftArmMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(c.leftArm || '#f5cd2f'), roughness: 0.35 });
-  const leftArmMesh = new THREE.Mesh(armGeo, leftArmMat);
-  leftArmMesh.position.set(0, -1, 0);
+  // Authentic Roblox Lathe Head
+  const headPoints: THREE.Vector2[] = [];
+  headPoints.push(new THREE.Vector2(0, -0.62));
+  headPoints.push(new THREE.Vector2(0.3, -0.62));
+  headPoints.push(new THREE.Vector2(0.55, -0.56));
+  headPoints.push(new THREE.Vector2(0.63, -0.45));
+  headPoints.push(new THREE.Vector2(0.65, -0.25));
+  headPoints.push(new THREE.Vector2(0.65, 0.25));
+  headPoints.push(new THREE.Vector2(0.63, 0.45));
+  headPoints.push(new THREE.Vector2(0.55, 0.56));
+  headPoints.push(new THREE.Vector2(0.3, 0.62));
+  headPoints.push(new THREE.Vector2(0, 0.62));
+
+  const headGeo = new THREE.LatheGeometry(headPoints, 32);
+  const headMesh = new THREE.Mesh(headGeo, createBodyMat(c.head));
+  headMesh.position.set(0, 1.62, 0);
+  headMesh.castShadow = true;
+  group.add(headMesh);
+
+  // Authentic Smiling Face Quad
+  const faceCanvas = document.createElement('canvas');
+  faceCanvas.width = 256;
+  faceCanvas.height = 256;
+  const fctx = faceCanvas.getContext('2d')!;
+  fctx.fillStyle = '#141619';
+  fctx.beginPath();
+  fctx.ellipse(95, 107, 11, 17, 0, 0, Math.PI * 2);
+  fctx.fill();
+  fctx.beginPath();
+  fctx.ellipse(161, 107, 11, 17, 0, 0, Math.PI * 2);
+  fctx.fill();
+  fctx.strokeStyle = '#141619';
+  fctx.lineWidth = 11;
+  fctx.lineCap = 'round';
+  fctx.beginPath();
+  fctx.arc(128, 130, 40, 0.22 * Math.PI, 0.78 * Math.PI, false);
+  fctx.stroke();
+
+  const faceTex = new THREE.CanvasTexture(faceCanvas);
+  faceTex.colorSpace = THREE.SRGBColorSpace;
+  const faceQuad = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.96, 0.85),
+    new THREE.MeshBasicMaterial({ map: faceTex, transparent: true, depthWrite: false })
+  );
+  faceQuad.position.set(0, 1.62, 0.655);
+  group.add(faceQuad);
+
+  // Pivots (Exact Roblox Arm & Leg Layout)
+  const leftArmPivot = new THREE.Group();
+  leftArmPivot.position.set(1.5, 1.0, 0);
+  group.add(leftArmPivot);
+
+  const leftArmMesh = new THREE.Mesh(new THREE.BoxGeometry(1, 2, 1), createBodyMat(c.leftArm));
+  leftArmMesh.position.set(0, -1.0, 0);
   leftArmMesh.castShadow = true;
-  leftArmGroup.add(leftArmMesh);
-  group.add(leftArmGroup);
+  leftArmPivot.add(leftArmMesh);
 
-  // Right Arm
-  const rightArmGroup = new THREE.Group();
-  rightArmGroup.position.set(1.5, 0.9, 0);
-  const rightArmMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(c.rightArm || '#f5cd2f'), roughness: 0.35 });
-  const rightArmMesh = new THREE.Mesh(armGeo, rightArmMat);
-  rightArmMesh.position.set(0, -1, 0);
+  const rightArmPivot = new THREE.Group();
+  rightArmPivot.position.set(-1.5, 1.0, 0);
+  group.add(rightArmPivot);
+
+  const rightArmMesh = new THREE.Mesh(new THREE.BoxGeometry(1, 2, 1), createBodyMat(c.rightArm));
+  rightArmMesh.position.set(0, -1.0, 0);
   rightArmMesh.castShadow = true;
-  rightArmGroup.add(rightArmMesh);
-  group.add(rightArmGroup);
+  rightArmPivot.add(rightArmMesh);
 
-  // Left Leg
-  const leftLegGroup = new THREE.Group();
-  leftLegGroup.position.set(-0.55, -1.0, 0);
-  const legGeo = new THREE.BoxGeometry(1, 2, 1);
-  const leftLegMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(c.leftLeg || '#a0a528'), roughness: 0.35 });
-  const leftLegMesh = new THREE.Mesh(legGeo, leftLegMat);
-  leftLegMesh.position.set(0, -1, 0);
+  const leftLegPivot = new THREE.Group();
+  leftLegPivot.position.set(0.5, -1.0, 0);
+  group.add(leftLegPivot);
+
+  const leftLegMesh = new THREE.Mesh(new THREE.BoxGeometry(1, 2, 1), createBodyMat(c.leftLeg));
+  leftLegMesh.position.set(0, -1.0, 0);
   leftLegMesh.castShadow = true;
-  leftLegGroup.add(leftLegMesh);
-  group.add(leftLegGroup);
+  leftLegPivot.add(leftLegMesh);
 
-  // Right Leg
-  const rightLegGroup = new THREE.Group();
-  rightLegGroup.position.set(0.55, -1.0, 0);
-  const rightLegMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(c.rightLeg || '#a0a528'), roughness: 0.35 });
-  const rightLegMesh = new THREE.Mesh(legGeo, rightLegMat);
-  rightLegMesh.position.set(0, -1, 0);
+  const rightLegPivot = new THREE.Group();
+  rightLegPivot.position.set(-0.5, -1.0, 0);
+  group.add(rightLegPivot);
+
+  const rightLegMesh = new THREE.Mesh(new THREE.BoxGeometry(1, 2, 1), createBodyMat(c.rightLeg));
+  rightLegMesh.position.set(0, -1.0, 0);
   rightLegMesh.castShadow = true;
-  rightLegGroup.add(rightLegMesh);
-  group.add(rightLegGroup);
+  rightLegPivot.add(rightLegMesh);
 
-  // Clothes if equipped
-  if (p.shirtUrl) {
-    loadRobloxTexture(p.shirtUrl)
+  // CLOTHING LAYERS (WITH FULL ROBLOX UV MAPPING)
+  const createClothingMesh = (
+    width: number,
+    height: number,
+    depth: number,
+    partType: 'torso' | 'rightArm' | 'leftArm' | 'rightLeg' | 'leftLeg'
+  ) => {
+    const geo = new THREE.BoxGeometry(width, height, depth);
+    applyRobloxClothingUV(geo, partType);
+    const mat = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      transparent: true,
+      alphaTest: 0.05,
+      roughness: 0.45,
+      metalness: 0.04,
+      side: THREE.FrontSide,
+      visible: false,
+    });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.castShadow = true;
+    mesh.visible = false;
+    return mesh;
+  };
+
+  const pantsTorsoMesh = createClothingMesh(2 * 1.01, 2 * 1.01, 1 * 1.01, 'torso');
+  pantsTorsoMesh.position.set(0, 0, 0);
+  group.add(pantsTorsoMesh);
+
+  const pantsLeftLegMesh = createClothingMesh(1 * 1.012, 2 * 1.012, 1 * 1.012, 'leftLeg');
+  pantsLeftLegMesh.position.set(0, -1.0, 0);
+  leftLegPivot.add(pantsLeftLegMesh);
+
+  const pantsRightLegMesh = createClothingMesh(1 * 1.012, 2 * 1.012, 1 * 1.012, 'rightLeg');
+  pantsRightLegMesh.position.set(0, -1.0, 0);
+  rightLegPivot.add(pantsRightLegMesh);
+
+  const shirtTorsoMesh = createClothingMesh(2 * 1.016, 2 * 1.016, 1 * 1.016, 'torso');
+  shirtTorsoMesh.position.set(0, 0, 0);
+  group.add(shirtTorsoMesh);
+
+  const shirtLeftArmMesh = createClothingMesh(1 * 1.016, 2 * 1.016, 1 * 1.016, 'leftArm');
+  shirtLeftArmMesh.position.set(0, -1.0, 0);
+  leftArmPivot.add(shirtLeftArmMesh);
+
+  const shirtRightArmMesh = createClothingMesh(1 * 1.016, 2 * 1.016, 1 * 1.016, 'rightArm');
+  shirtRightArmMesh.position.set(0, -1.0, 0);
+  rightArmPivot.add(shirtRightArmMesh);
+
+  const shirtMeshes = [shirtTorsoMesh, shirtLeftArmMesh, shirtRightArmMesh];
+  const pantsMeshes = [pantsTorsoMesh, pantsLeftLegMesh, pantsRightLegMesh];
+
+  const applyTextureToMeshes = (url: string | null, meshes: THREE.Mesh[]) => {
+    if (!url) {
+      meshes.forEach((m) => {
+        m.visible = false;
+        (m.material as THREE.MeshStandardMaterial).visible = false;
+      });
+      return;
+    }
+    loadRobloxTexture(url)
       .then((tex) => {
-        const sMat = new THREE.MeshStandardMaterial({ map: tex, transparent: true, alphaTest: 0.05 });
-        const sTorso = new THREE.Mesh(new THREE.BoxGeometry(2.03, 2.03, 1.03), sMat);
-        sTorso.position.set(0, 0, 0);
-        group.add(sTorso);
+        meshes.forEach((m) => {
+          const mat = m.material as THREE.MeshStandardMaterial;
+          mat.map = tex;
+          mat.visible = true;
+          mat.needsUpdate = true;
+          m.visible = true;
+        });
       })
       .catch(() => {});
-  }
+  };
 
-  if (p.pantsUrl) {
-    loadRobloxTexture(p.pantsUrl)
-      .then((tex) => {
-        const pMat = new THREE.MeshStandardMaterial({ map: tex, transparent: true, alphaTest: 0.05 });
-        const pLeft = new THREE.Mesh(new THREE.BoxGeometry(1.03, 2.03, 1.03), pMat);
-        pLeft.position.set(0, -1, 0);
-        leftLegGroup.add(pLeft);
-        const pRight = new THREE.Mesh(new THREE.BoxGeometry(1.03, 2.03, 1.03), pMat);
-        pRight.position.set(0, -1, 0);
-        rightLegGroup.add(pRight);
-      })
-      .catch(() => {});
-  }
+  if (p.shirtUrl) applyTextureToMeshes(p.shirtUrl, shirtMeshes);
+  if (p.pantsUrl) applyTextureToMeshes(p.pantsUrl, pantsMeshes);
 
   // 3D Billboard Name Tag
   const tagCanvas = document.createElement('canvas');
   tagCanvas.width = 512;
   tagCanvas.height = 128;
   const tagCtx = tagCanvas.getContext('2d')!;
-  tagCtx.fillStyle = 'rgba(0, 0, 0, 0.75)';
+  tagCtx.fillStyle = 'rgba(18, 20, 24, 0.82)';
   tagCtx.beginPath();
   tagCtx.roundRect(16, 16, 480, 96, 24);
   tagCtx.fill();
@@ -217,15 +287,29 @@ function createRemotePlayerGroup(p: ActiveServerPlayer): {
   const tagGeo = new THREE.PlaneGeometry(3.6, 0.9);
   const tagMat = new THREE.MeshBasicMaterial({ map: tagTex, transparent: true, side: THREE.DoubleSide });
   const tagMesh = new THREE.Mesh(tagGeo, tagMat);
-  tagMesh.position.set(0, 2.4, 0);
+  tagMesh.position.set(0, 2.7, 0);
   group.add(tagMesh);
 
   return {
     group,
-    leftArm: leftArmGroup,
-    rightArm: rightArmGroup,
-    leftLeg: leftLegGroup,
-    rightLeg: rightLegGroup,
+    leftArm: leftArmPivot,
+    rightArm: rightArmPivot,
+    leftLeg: leftLegPivot,
+    rightLeg: rightLegPivot,
+    shirtMeshes,
+    pantsMeshes,
+    updateClothing: (newShirtUrl, newPantsUrl) => {
+      applyTextureToMeshes(newShirtUrl, shirtMeshes);
+      applyTextureToMeshes(newPantsUrl, pantsMeshes);
+    },
+    updateColors: (newColors) => {
+      torsoMesh.material = createBodyMat(newColors.torso);
+      headMesh.material = createBodyMat(newColors.head);
+      leftArmMesh.material = createBodyMat(newColors.leftArm);
+      rightArmMesh.material = createBodyMat(newColors.rightArm);
+      leftLegMesh.material = createBodyMat(newColors.leftLeg);
+      rightLegMesh.material = createBodyMat(newColors.rightLeg);
+    },
   };
 }
 
@@ -265,7 +349,7 @@ export default function GameWorld({
   const leftLegGroupRef = useRef<THREE.Group | null>(null);
   const rightLegGroupRef = useRef<THREE.Group | null>(null);
 
-  // Remote Player 3D Meshes Ref
+  // Remote Player 3D Meshes Ref with dead-reckoning physics & smooth interpolation
   const remoteMeshesRef = useRef<
     Map<
       string,
@@ -275,52 +359,246 @@ export default function GameWorld({
         rightArm: THREE.Group;
         leftLeg: THREE.Group;
         rightLeg: THREE.Group;
+        shirtMeshes: THREE.Mesh[];
+        pantsMeshes: THREE.Mesh[];
         targetPos: THREE.Vector3;
+        targetVel: THREE.Vector3;
         targetRotY: number;
         isMoving: boolean;
         isGrounded: boolean;
         walkTime: number;
+        lastPacketTime: number;
+        loadedShirtUrl: string | null;
+        loadedPantsUrl: string | null;
+        updateClothing: (newShirtUrl: string | null, newPantsUrl: string | null) => void;
+        updateColors: (newColors: AvatarColors) => void;
       }
     >
   >(new Map());
 
-  // Realtime Firestore Sync
-  useEffect(() => {
-    if (!db) return;
+  // Real-time network refs & live ping state
+  const wsRef = useRef<WebSocket | null>(null);
+  const bcRef = useRef<BroadcastChannel | null>(null);
+  const lastNetworkSendTime = useRef(0);
+  const lastFirestorePublish = useRef(0);
+  const [livePing, setLivePing] = useState<number>(18);
 
-    const playersColRef = collection(db, 'games', gameId, 'players');
-    const unsub = onSnapshot(playersColRef, (snapshot) => {
-      const activeList: ActiveServerPlayer[] = [];
-      const now = Date.now();
+  // Fast-path remote player data update handler
+  const handleIncomingPlayerData = (p: Partial<ActiveServerPlayer> & { uid: string }) => {
+    if (!p || !p.uid || p.uid === myUid) return;
 
-      snapshot.forEach((docSnap) => {
-        const p = docSnap.data() as ActiveServerPlayer;
-        if (p && p.updatedAt && now - p.updatedAt < 15000) {
-          activeList.push(p);
+    // 1. Direct fast update into remoteMeshesRef for immediate zero-lag interpolation
+    const rData = remoteMeshesRef.current.get(p.uid);
+    if (rData) {
+      if (Array.isArray(p.position)) {
+        const newPos = new THREE.Vector3(p.position[0], p.position[1], p.position[2]);
+        // Snap instantly if teleport or far away
+        if (rData.group.position.distanceTo(newPos) > 25) {
+          rData.group.position.copy(newPos);
         }
-      });
-
-      if (!activeList.some((p) => p.uid === myUid)) {
-        activeList.push({
-          uid: myUid,
-          username: myUsername,
-          displayName: myDisplayName,
-          colors: colors,
-          shirtUrl: shirtUrl,
-          pantsUrl: pantsUrl,
-          position: [0, 3.0, 0],
-          rotationY: Math.PI,
-          isMoving: false,
-          isGrounded: true,
-          updatedAt: Date.now(),
-        });
+        rData.targetPos.copy(newPos);
       }
+      if (Array.isArray(p.velocity)) {
+        rData.targetVel.set(p.velocity[0], p.velocity[1], p.velocity[2]);
+      }
+      if (typeof p.rotationY === 'number') {
+        rData.targetRotY = p.rotationY;
+      }
+      if (typeof p.isMoving === 'boolean') {
+        rData.isMoving = p.isMoving;
+      }
+      if (typeof p.isGrounded === 'boolean') {
+        rData.isGrounded = p.isGrounded;
+      }
+      rData.lastPacketTime = performance.now();
 
-      setServerPlayers(activeList);
+      if (p.shirtUrl !== undefined || p.pantsUrl !== undefined) {
+        rData.updateClothing(p.shirtUrl || null, p.pantsUrl || null);
+      }
+      if (p.colors) {
+        rData.updateColors(p.colors);
+      }
+    }
+
+    // 2. Update React serverPlayers state
+    setServerPlayers((prev) => {
+      const idx = prev.findIndex((sp) => sp.uid === p.uid);
+      if (idx >= 0) {
+        const copy = [...prev];
+        copy[idx] = { ...copy[idx], ...p, updatedAt: Date.now() };
+        return copy;
+      } else {
+        return [
+          ...prev,
+          {
+            uid: p.uid,
+            username: p.username || 'Player',
+            displayName: p.displayName || p.username || 'Player',
+            colors: p.colors || {
+              head: '#f5cd2f',
+              torso: '#0d69ac',
+              leftArm: '#f5cd2f',
+              rightArm: '#f5cd2f',
+              leftLeg: '#a0a528',
+              rightLeg: '#a0a528',
+            },
+            shirtUrl: p.shirtUrl || null,
+            pantsUrl: p.pantsUrl || null,
+            position: p.position || [0, 3.0, 0],
+            velocity: p.velocity || [0, 0, 0],
+            rotationY: typeof p.rotationY === 'number' ? p.rotationY : Math.PI,
+            isMoving: Boolean(p.isMoving),
+            isGrounded: p.isGrounded !== false,
+            updatedAt: Date.now(),
+          },
+        ];
+      }
     });
+  };
+
+  const handlePlayerLeft = (uid: string) => {
+    const rData = remoteMeshesRef.current.get(uid);
+    if (rData && sceneRef.current) {
+      sceneRef.current.remove(rData.group);
+      remoteMeshesRef.current.delete(uid);
+    }
+    setServerPlayers((prev) => prev.filter((p) => p.uid !== uid));
+  };
+
+  // High-performance real-time synchronization: WebSocket + BroadcastChannel + Firestore
+  useEffect(() => {
+    let isMounted = true;
+    let ws: WebSocket | null = null;
+    let bc: BroadcastChannel | null = null;
+    let pingInterval: any = null;
+
+    // 1. BroadcastChannel for zero-latency multi-tab sync
+    try {
+      bc = new BroadcastChannel(`rovix_mp_sync_${gameId}`);
+      bcRef.current = bc;
+      bc.onmessage = (event) => {
+        if (!isMounted) return;
+        const data = event.data;
+        if (data?.type === 'move' && data.player) {
+          handleIncomingPlayerData(data.player);
+        } else if (data?.type === 'leave' && data.uid) {
+          handlePlayerLeft(data.uid);
+        }
+      };
+    } catch {}
+
+    // 2. WebSocket connection to server
+    const connectWs = () => {
+      try {
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const url = `${protocol}//${window.location.host}/ws`;
+        ws = new WebSocket(url);
+        wsRef.current = ws;
+
+        ws.onopen = () => {
+          if (!isMounted) return;
+          ws?.send(
+            JSON.stringify({
+              type: 'join',
+              gameId,
+              player: {
+                uid: myUid,
+                username: myUsername,
+                displayName: myDisplayName,
+                colors,
+                shirtUrl,
+                pantsUrl,
+                position: [0, 3.0, 0],
+                velocity: [0, 0, 0],
+                rotationY: Math.PI,
+                isMoving: false,
+                isGrounded: true,
+                updatedAt: Date.now(),
+              },
+            })
+          );
+
+          // Ping server every 2 seconds for real measured ping
+          pingInterval = setInterval(() => {
+            if (ws?.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: 'ping', clientTime: performance.now() }));
+            }
+          }, 2000);
+        };
+
+        ws.onmessage = (evt) => {
+          if (!isMounted) return;
+          try {
+            const msg = JSON.parse(evt.data);
+            if (msg.type === 'init_players' && Array.isArray(msg.players)) {
+              msg.players.forEach(handleIncomingPlayerData);
+            } else if (msg.type === 'player_joined' && msg.player) {
+              handleIncomingPlayerData(msg.player);
+            } else if (msg.type === 'player_moved') {
+              handleIncomingPlayerData({
+                uid: msg.uid,
+                position: msg.position,
+                velocity: msg.velocity,
+                rotationY: msg.rotationY,
+                isMoving: msg.isMoving,
+                isGrounded: msg.isGrounded,
+                updatedAt: msg.timestamp || Date.now(),
+              });
+            } else if (msg.type === 'player_left' && msg.uid) {
+              handlePlayerLeft(msg.uid);
+            } else if (msg.type === 'pong' && typeof msg.clientTime === 'number') {
+              const rtt = Math.max(1, Math.round(performance.now() - msg.clientTime));
+              setLivePing(rtt);
+            }
+          } catch {}
+        };
+
+        ws.onclose = () => {
+          if (isMounted) {
+            setTimeout(connectWs, 3000);
+          }
+        };
+      } catch {}
+    };
+
+    connectWs();
+
+    // 3. Firestore Snapshot Sync (cross-session & cross-server guarantee)
+    let unsubFirestore: (() => void) | null = null;
+    if (db) {
+      try {
+        const playersColRef = collection(db, 'games', gameId, 'players');
+        unsubFirestore = onSnapshot(playersColRef, (snapshot) => {
+          const now = Date.now();
+          snapshot.forEach((docSnap) => {
+            const p = docSnap.data() as ActiveServerPlayer;
+            if (p && p.uid !== myUid && p.updatedAt && now - p.updatedAt < 20000) {
+              handleIncomingPlayerData(p);
+            }
+          });
+        });
+      } catch {}
+    }
 
     return () => {
-      unsub();
+      isMounted = false;
+      clearInterval(pingInterval);
+      if (ws) {
+        try {
+          ws.close();
+        } catch {}
+        wsRef.current = null;
+      }
+      if (bc) {
+        try {
+          bc.postMessage({ type: 'leave', uid: myUid });
+          bc.close();
+        } catch {}
+        bcRef.current = null;
+      }
+      if (unsubFirestore) {
+        unsubFirestore();
+      }
       try {
         deleteDoc(doc(db, 'games', gameId, 'players', myUid));
       } catch {}
@@ -1158,32 +1436,65 @@ export default function GameWorld({
         if (rLeg) rLeg.rotation.x = THREE.MathUtils.lerp(rLeg.rotation.x, 0, 0.2);
       }
 
-      // --- MULTIPLAYER POSITION PUBLISHING & REMOTE LERP ---
-      const now = Date.now();
-      if (db && myUid && now - lastPublishTime.current > 80) {
-        lastPublishTime.current = now;
-        try {
-          setDoc(
-            doc(db, 'games', gameId, 'players', myUid),
-            {
-              uid: myUid,
-              username: myUsername,
-              displayName: myDisplayName,
-              colors,
-              shirtUrl,
-              pantsUrl,
-              position: [state.position.x, state.position.y, state.position.z],
-              rotationY: state.rotationY,
-              isMoving: state.isMoving,
-              isGrounded: state.isGrounded,
-              updatedAt: now,
-            },
-            { merge: true }
-          );
-        } catch {}
+      // --- MULTIPLAYER REAL-TIME POSITION BROADCASTING & DEAD RECKONING LERP ---
+      const nowPerf = performance.now();
+      if (nowPerf - lastNetworkSendTime.current > 33) {
+        lastNetworkSendTime.current = nowPerf;
+        const movePayload: ActiveServerPlayer = {
+          uid: myUid,
+          username: myUsername,
+          displayName: myDisplayName,
+          colors,
+          shirtUrl,
+          pantsUrl,
+          position: [state.position.x, state.position.y, state.position.z],
+          velocity: [state.velocity.x, state.velocity.y, state.velocity.z],
+          rotationY: state.rotationY,
+          isMoving: state.isMoving,
+          isGrounded: state.isGrounded,
+          updatedAt: Date.now(),
+          ping: livePing,
+        };
+
+        // 1. Send via WebSocket (high-frequency low-latency)
+        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+          try {
+            wsRef.current.send(
+              JSON.stringify({
+                type: 'move',
+                gameId,
+                player: movePayload,
+                position: movePayload.position,
+                velocity: movePayload.velocity,
+                rotationY: movePayload.rotationY,
+                isMoving: movePayload.isMoving,
+                isGrounded: movePayload.isGrounded,
+              })
+            );
+          } catch {}
+        }
+
+        // 2. BroadcastChannel (instantaneous inter-tab in same browser)
+        if (bcRef.current) {
+          try {
+            bcRef.current.postMessage({
+              type: 'move',
+              player: movePayload,
+            });
+          } catch {}
+        }
+
+        // 3. Firestore (throttled to 400ms for persistence)
+        const nowMs = Date.now();
+        if (db && myUid && nowMs - lastFirestorePublish.current > 400) {
+          lastFirestorePublish.current = nowMs;
+          try {
+            setDoc(doc(db, 'games', gameId, 'players', myUid), movePayload, { merge: true });
+          } catch {}
+        }
       }
 
-      // Render & LERP remote players smoothly
+      // Render & smoothly interpolate remote players with dead reckoning & exponential damping
       if (sceneRef.current) {
         serverPlayers.forEach((p) => {
           if (!p || !p.uid || p.uid === myUid) return;
@@ -1191,6 +1502,9 @@ export default function GameWorld({
           const px = Array.isArray(p.position) && typeof p.position[0] === 'number' ? p.position[0] : 0;
           const py = Array.isArray(p.position) && typeof p.position[1] === 'number' ? p.position[1] : 3.0;
           const pz = Array.isArray(p.position) && typeof p.position[2] === 'number' ? p.position[2] : 0;
+          const pvx = Array.isArray(p.velocity) && typeof p.velocity[0] === 'number' ? p.velocity[0] : 0;
+          const pvy = Array.isArray(p.velocity) && typeof p.velocity[1] === 'number' ? p.velocity[1] : 0;
+          const pvz = Array.isArray(p.velocity) && typeof p.velocity[2] === 'number' ? p.velocity[2] : 0;
           const protY = typeof p.rotationY === 'number' ? p.rotationY : Math.PI;
 
           let rData = remoteMeshesRef.current.get(p.uid);
@@ -1205,34 +1519,55 @@ export default function GameWorld({
               rightArm: created.rightArm,
               leftLeg: created.leftLeg,
               rightLeg: created.rightLeg,
+              shirtMeshes: created.shirtMeshes,
+              pantsMeshes: created.pantsMeshes,
               targetPos: new THREE.Vector3(px, py, pz),
+              targetVel: new THREE.Vector3(pvx, pvy, pvz),
               targetRotY: protY,
               isMoving: Boolean(p.isMoving),
               isGrounded: p.isGrounded !== false,
               walkTime: 0,
+              lastPacketTime: performance.now(),
+              loadedShirtUrl: p.shirtUrl,
+              loadedPantsUrl: p.pantsUrl,
+              updateClothing: created.updateClothing,
+              updateColors: created.updateColors,
             };
             remoteMeshesRef.current.set(p.uid, rData);
-          } else {
-            rData.targetPos.set(px, py, pz);
-            rData.targetRotY = protY;
-            rData.isMoving = Boolean(p.isMoving);
-            rData.isGrounded = p.isGrounded !== false;
           }
 
-          // Smooth 60fps LERP interpolation towards target position & angle
-          rData.group.position.lerp(rData.targetPos, 0.22);
+          // 1. Dead reckoning prediction between network ticks
+          if (!rData.isGrounded) {
+            rData.targetVel.y += gravity * dt;
+            rData.targetPos.y += rData.targetVel.y * dt;
+            if (rData.targetPos.y < 3.0) {
+              rData.targetPos.y = 3.0;
+              rData.targetVel.y = 0;
+              rData.isGrounded = true;
+            }
+          }
+          if (rData.isMoving) {
+            rData.targetPos.x += rData.targetVel.x * dt;
+            rData.targetPos.z += rData.targetVel.z * dt;
+          }
 
+          // 2. Exponential smooth LERP (frame-rate independent 60 FPS)
+          const posAlpha = Math.min(1.0, 1 - Math.exp(-22 * dt));
+          rData.group.position.lerp(rData.targetPos, posAlpha);
+
+          // 3. Smooth angle LERP
           let diffRot = rData.targetRotY - rData.group.rotation.y;
           while (diffRot < -Math.PI) diffRot += Math.PI * 2;
           while (diffRot > Math.PI) diffRot -= Math.PI * 2;
-          rData.group.rotation.y += diffRot * 0.22;
+          rData.group.rotation.y += diffRot * posAlpha;
 
-          // Remote limb animation
+          // 4. Smooth limb animation (Iconic Roblox Jump & Walk)
           if (!rData.isGrounded) {
-            rData.leftArm.rotation.x = THREE.MathUtils.lerp(rData.leftArm.rotation.x, -Math.PI, 0.25);
-            rData.rightArm.rotation.x = THREE.MathUtils.lerp(rData.rightArm.rotation.x, -Math.PI, 0.25);
-            rData.leftLeg.rotation.x = THREE.MathUtils.lerp(rData.leftLeg.rotation.x, 0.28, 0.2);
-            rData.rightLeg.rotation.x = THREE.MathUtils.lerp(rData.rightLeg.rotation.x, -0.28, 0.2);
+            const jumpArmAngle = -Math.PI;
+            rData.leftArm.rotation.x = THREE.MathUtils.lerp(rData.leftArm.rotation.x, jumpArmAngle, posAlpha * 1.5);
+            rData.rightArm.rotation.x = THREE.MathUtils.lerp(rData.rightArm.rotation.x, jumpArmAngle, posAlpha * 1.5);
+            rData.leftLeg.rotation.x = THREE.MathUtils.lerp(rData.leftLeg.rotation.x, 0.28, posAlpha);
+            rData.rightLeg.rotation.x = THREE.MathUtils.lerp(rData.rightLeg.rotation.x, -0.28, posAlpha);
           } else if (rData.isMoving) {
             rData.walkTime += dt * 11.5;
             const armSwing = Math.sin(rData.walkTime) * 0.75;
@@ -1242,10 +1577,10 @@ export default function GameWorld({
             rData.leftLeg.rotation.x = legSwing;
             rData.rightLeg.rotation.x = -legSwing;
           } else {
-            rData.leftArm.rotation.x = THREE.MathUtils.lerp(rData.leftArm.rotation.x, 0, 0.2);
-            rData.rightArm.rotation.x = THREE.MathUtils.lerp(rData.rightArm.rotation.x, 0, 0.2);
-            rData.leftLeg.rotation.x = THREE.MathUtils.lerp(rData.leftLeg.rotation.x, 0, 0.2);
-            rData.rightLeg.rotation.x = THREE.MathUtils.lerp(rData.rightLeg.rotation.x, 0, 0.2);
+            rData.leftArm.rotation.x = THREE.MathUtils.lerp(rData.leftArm.rotation.x, 0, posAlpha);
+            rData.rightArm.rotation.x = THREE.MathUtils.lerp(rData.rightArm.rotation.x, 0, posAlpha);
+            rData.leftLeg.rotation.x = THREE.MathUtils.lerp(rData.leftLeg.rotation.x, 0, posAlpha);
+            rData.rightLeg.rotation.x = THREE.MathUtils.lerp(rData.rightLeg.rotation.x, 0, posAlpha);
           }
         });
 
@@ -1466,7 +1801,9 @@ export default function GameWorld({
 
                     <div className="flex items-center gap-1.5 shrink-0 pl-2">
                       <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                      <span className="text-[10px] font-mono text-neutral-400">18ms</span>
+                      <span className="text-[10px] font-mono text-neutral-400">
+                        {isMe ? `${livePing}ms` : `${p.ping || livePing}ms`}
+                      </span>
                     </div>
                   </div>
                 );

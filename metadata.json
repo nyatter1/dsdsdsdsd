@@ -1,6 +1,6 @@
 {
   "name": "Remix Remix Remix Remix Roblox Desktop Client",
-  "description": "Simplified dark-themed desktop home page with player Test123, sharp geometry, and interactive client buttons.",
+  "description": "Modern dark-themed desktop client with smooth multiplayer, avatar customization, Rovix Studio, and live Luau runtime.",
   "requestFramePermissions": [],
   "majorCapabilities": [
     "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"

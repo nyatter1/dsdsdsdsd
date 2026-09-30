@@ -274,7 +274,7 @@ updateDisplay()
 export const CLICKER_GAME_PLACE: SavedGame = {
   id: 'clicker',
   title: 'Clicker',
-  creator: 'Test123',
+  creator: 'Community',
   initials: 'CK',
   gradient: 'from-[#1e1b4b] via-[#31104b] to-[#0f172a]',
   isPublic: true,
@@ -1130,7 +1130,7 @@ export const CLICK_THE_BUTTON_PLACE: SavedGame = {
 export const DEFAULT_TEST_PLACE: SavedGame = {
   id: 'test_place',
   title: 'Test Place',
-  creator: 'Test123',
+  creator: 'Rovix',
   initials: 'TP',
   gradient: 'from-[#2e623a] via-[#1a3821] to-[#0f2013]',
   isPublic: true,

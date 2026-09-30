@@ -51,8 +51,8 @@ interface ProfileData {
 }
 
 const DEFAULT_PROFILE: ProfileData = {
-  displayName: 'Test123',
-  username: '@Test123',
+  displayName: 'Player',
+  username: '@Player',
   bio: '',
   friendsCount: 0,
   followersCount: 0,
@@ -71,7 +71,7 @@ export default function UserProfileView({
   onEquipShirt,
   onEquipPants,
 }: UserProfileViewProps) {
-  // Load persistent profile details (Test123 / @Test123)
+  // Load persistent profile details
   const [profile, setProfile] = useState<ProfileData>(() => {
     try {
       const userRaw = localStorage.getItem('rovix_current_user_v1');
@@ -125,7 +125,7 @@ export default function UserProfileView({
   const [isFavorited, setIsFavorited] = useState(false);
   const [isNotified, setIsNotified] = useState(false);
   const [userRating, setUserRating] = useState<'like' | 'dislike' | null>(null);
-  const [likesCount, setLikesCount] = useState(5);
+  const [likesCount, setLikesCount] = useState(0);
   const [dislikesCount, setDislikesCount] = useState(0);
   const [expSubTab, setExpSubTab] = useState<'About' | 'Store' | 'Servers'>('About');
 
@@ -905,7 +905,7 @@ export default function UserProfileView({
                       {/* Horizontal line under title */}
                       <div className="border-b border-neutral-800 w-full my-3" />
 
-                      {/* Stats: Active 0, Visits 1.4K */}
+                      {/* Stats: Active & Visits */}
                       <div className="flex items-center gap-12 text-xs pt-1">
                         <div>
                           <div className="text-neutral-400 mb-0.5">Active</div>
@@ -914,7 +914,7 @@ export default function UserProfileView({
 
                         <div>
                           <div className="text-neutral-400 mb-0.5">Visits</div>
-                          <div className="font-bold text-white">1.4K</div>
+                          <div className="font-bold text-white">{(game as any).visitCount || (game.playingCount ? game.playingCount * 5 : 0)}</div>
                         </div>
                       </div>
 
@@ -973,7 +973,7 @@ export default function UserProfileView({
                       </div>
                       <div className="flex items-center gap-4 text-xs mt-2 text-neutral-400">
                         <span>Active: <strong className="text-white">{game.playingCount || 0}</strong></span>
-                        <span>Visits: <strong className="text-white">1.4K</strong></span>
+                        <span>Visits: <strong className="text-white">{(game as any).visitCount || (game.playingCount ? game.playingCount * 5 : 0)}</strong></span>
                       </div>
                     </div>
                   </div>
