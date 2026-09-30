@@ -329,12 +329,22 @@ export default function GameWorld({
   const [serverPlayers, setServerPlayers] = useState<ActiveServerPlayer[]>([]);
   const [isLeaderboardOpen, setIsLeaderboardOpen] = useState(true);
 
-  // My current user credentials
+  // My current user credentials (distinct session UID per browser tab/instance for multiplayer)
   const gameId = game?.id || 'default_place';
   const currentUserRaw = localStorage.getItem('rovix_current_user_v1');
   const currentUserObj = currentUserRaw ? JSON.parse(currentUserRaw) : null;
-  const myUid = auth.currentUser?.uid || currentUserObj?.uid || 'guest_' + Math.random().toString(36).substring(2, 7);
-  const myUsername = currentUserObj?.username || 'Player';
+  const myUid = useRef(() => {
+    try {
+      const stored = sessionStorage.getItem('rovix_session_uid_v3');
+      if (stored) return stored;
+      const gen = 'u_' + (currentUserObj?.username ? currentUserObj.username.toLowerCase() + '_' : '') + Math.random().toString(36).substring(2, 9);
+      sessionStorage.setItem('rovix_session_uid_v3', gen);
+      return gen;
+    } catch {
+      return 'u_' + Math.random().toString(36).substring(2, 9);
+    }
+  }).current();
+  const myUsername = currentUserObj?.username || 'Hayden67';
   const myDisplayName = currentUserObj?.displayName || myUsername;
   const lastPublishTime = useRef(0);
 
@@ -383,33 +393,76 @@ export default function GameWorld({
   const lastFirestorePublish = useRef(0);
   const [livePing, setLivePing] = useState<number>(18);
 
-  // Fast-path remote player data update handler
+  // Fast-path remote player data update handler (instantly spawns and synchronizes remote 3D meshes)
   const handleIncomingPlayerData = (p: Partial<ActiveServerPlayer> & { uid: string }) => {
     if (!p || !p.uid || p.uid === myUid) return;
 
-    // 1. Direct fast update into remoteMeshesRef for immediate zero-lag interpolation
-    const rData = remoteMeshesRef.current.get(p.uid);
-    if (rData) {
-      if (Array.isArray(p.position)) {
-        const newPos = new THREE.Vector3(p.position[0], p.position[1], p.position[2]);
-        // Snap instantly if teleport or far away
-        if (rData.group.position.distanceTo(newPos) > 25) {
-          rData.group.position.copy(newPos);
-        }
-        rData.targetPos.copy(newPos);
+    const px = Array.isArray(p.position) && typeof p.position[0] === 'number' ? p.position[0] : 0;
+    const py = Array.isArray(p.position) && typeof p.position[1] === 'number' ? p.position[1] : 3.0;
+    const pz = Array.isArray(p.position) && typeof p.position[2] === 'number' ? p.position[2] : 0;
+    const pvx = Array.isArray(p.velocity) && typeof p.velocity[0] === 'number' ? p.velocity[0] : 0;
+    const pvy = Array.isArray(p.velocity) && typeof p.velocity[1] === 'number' ? p.velocity[1] : 0;
+    const pvz = Array.isArray(p.velocity) && typeof p.velocity[2] === 'number' ? p.velocity[2] : 0;
+    const protY = typeof p.rotationY === 'number' ? p.rotationY : Math.PI;
+
+    let rData = remoteMeshesRef.current.get(p.uid);
+    if (!rData && sceneRef.current) {
+      const fullPlayer: ActiveServerPlayer = {
+        uid: p.uid,
+        username: p.username || 'Player',
+        displayName: p.displayName || p.username || 'Player',
+        colors: p.colors || {
+          head: '#f5cd2f',
+          torso: '#0d69ac',
+          leftArm: '#f5cd2f',
+          rightArm: '#f5cd2f',
+          leftLeg: '#a0a528',
+          rightLeg: '#a0a528',
+        },
+        shirtUrl: p.shirtUrl || null,
+        pantsUrl: p.pantsUrl || null,
+        position: [px, py, pz],
+        velocity: [pvx, pvy, pvz],
+        rotationY: protY,
+        isMoving: Boolean(p.isMoving),
+        isGrounded: p.isGrounded !== false,
+        updatedAt: Date.now(),
+      };
+      const created = createRemotePlayerGroup(fullPlayer);
+      created.group.position.set(px, py, pz);
+      created.group.rotation.y = protY;
+      sceneRef.current.add(created.group);
+      rData = {
+        group: created.group,
+        leftArm: created.leftArm,
+        rightArm: created.rightArm,
+        leftLeg: created.leftLeg,
+        rightLeg: created.rightLeg,
+        shirtMeshes: created.shirtMeshes,
+        pantsMeshes: created.pantsMeshes,
+        targetPos: new THREE.Vector3(px, py, pz),
+        targetVel: new THREE.Vector3(pvx, pvy, pvz),
+        targetRotY: protY,
+        isMoving: Boolean(p.isMoving),
+        isGrounded: p.isGrounded !== false,
+        walkTime: 0,
+        lastPacketTime: performance.now(),
+        loadedShirtUrl: p.shirtUrl || null,
+        loadedPantsUrl: p.pantsUrl || null,
+        updateClothing: created.updateClothing,
+        updateColors: created.updateColors,
+      };
+      remoteMeshesRef.current.set(p.uid, rData);
+    } else if (rData) {
+      const newPos = new THREE.Vector3(px, py, pz);
+      if (rData.group.position.distanceTo(newPos) > 25) {
+        rData.group.position.copy(newPos);
       }
-      if (Array.isArray(p.velocity)) {
-        rData.targetVel.set(p.velocity[0], p.velocity[1], p.velocity[2]);
-      }
-      if (typeof p.rotationY === 'number') {
-        rData.targetRotY = p.rotationY;
-      }
-      if (typeof p.isMoving === 'boolean') {
-        rData.isMoving = p.isMoving;
-      }
-      if (typeof p.isGrounded === 'boolean') {
-        rData.isGrounded = p.isGrounded;
-      }
+      rData.targetPos.copy(newPos);
+      rData.targetVel.set(pvx, pvy, pvz);
+      rData.targetRotY = protY;
+      if (typeof p.isMoving === 'boolean') rData.isMoving = p.isMoving;
+      if (typeof p.isGrounded === 'boolean') rData.isGrounded = p.isGrounded;
       rData.lastPacketTime = performance.now();
 
       if (p.shirtUrl !== undefined || p.pantsUrl !== undefined) {
@@ -420,7 +473,7 @@ export default function GameWorld({
       }
     }
 
-    // 2. Update React serverPlayers state
+    // Update React serverPlayers state
     setServerPlayers((prev) => {
       const idx = prev.findIndex((sp) => sp.uid === p.uid);
       if (idx >= 0) {
@@ -444,9 +497,9 @@ export default function GameWorld({
             },
             shirtUrl: p.shirtUrl || null,
             pantsUrl: p.pantsUrl || null,
-            position: p.position || [0, 3.0, 0],
-            velocity: p.velocity || [0, 0, 0],
-            rotationY: typeof p.rotationY === 'number' ? p.rotationY : Math.PI,
+            position: [px, py, pz],
+            velocity: [pvx, pvy, pvz],
+            rotationY: protY,
             isMoving: Boolean(p.isMoving),
             isGrounded: p.isGrounded !== false,
             updatedAt: Date.now(),
@@ -472,6 +525,22 @@ export default function GameWorld({
     let bc: BroadcastChannel | null = null;
     let pingInterval: any = null;
 
+    const myInitialPayload: ActiveServerPlayer = {
+      uid: myUid,
+      username: myUsername,
+      displayName: myDisplayName,
+      colors,
+      shirtUrl,
+      pantsUrl,
+      position: [0, 3.0, 0],
+      velocity: [0, 0, 0],
+      rotationY: Math.PI,
+      isMoving: false,
+      isGrounded: true,
+      updatedAt: Date.now(),
+      ping: livePing,
+    };
+
     // 1. BroadcastChannel for zero-latency multi-tab sync
     try {
       bc = new BroadcastChannel(`rovix_mp_sync_${gameId}`);
@@ -479,12 +548,36 @@ export default function GameWorld({
       bc.onmessage = (event) => {
         if (!isMounted) return;
         const data = event.data;
-        if (data?.type === 'move' && data.player) {
+        if ((data?.type === 'move' || data?.type === 'announce') && data.player) {
           handleIncomingPlayerData(data.player);
+        } else if (data?.type === 'join' && data.player) {
+          handleIncomingPlayerData(data.player);
+          // Respond so the newly joined player in the other tab immediately knows about us
+          bc?.postMessage({
+            type: 'announce',
+            player: {
+              uid: myUid,
+              username: myUsername,
+              displayName: myDisplayName,
+              colors,
+              shirtUrl,
+              pantsUrl,
+              position: [playerState.current.position.x, playerState.current.position.y, playerState.current.position.z],
+              velocity: [playerState.current.velocity.x, playerState.current.velocity.y, playerState.current.velocity.z],
+              rotationY: playerState.current.rotationY,
+              isMoving: playerState.current.isMoving,
+              isGrounded: playerState.current.isGrounded,
+              updatedAt: Date.now(),
+              ping: livePing,
+            },
+          });
         } else if (data?.type === 'leave' && data.uid) {
           handlePlayerLeft(data.uid);
         }
       };
+
+      // Announce initial join on BroadcastChannel
+      bc.postMessage({ type: 'join', player: myInitialPayload });
     } catch {}
 
     // 2. WebSocket connection to server
@@ -501,20 +594,7 @@ export default function GameWorld({
             JSON.stringify({
               type: 'join',
               gameId,
-              player: {
-                uid: myUid,
-                username: myUsername,
-                displayName: myDisplayName,
-                colors,
-                shirtUrl,
-                pantsUrl,
-                position: [0, 3.0, 0],
-                velocity: [0, 0, 0],
-                rotationY: Math.PI,
-                isMoving: false,
-                isGrounded: true,
-                updatedAt: Date.now(),
-              },
+              player: myInitialPayload,
             })
           );
 
@@ -537,6 +617,11 @@ export default function GameWorld({
             } else if (msg.type === 'player_moved') {
               handleIncomingPlayerData({
                 uid: msg.uid,
+                username: msg.player?.username,
+                displayName: msg.player?.displayName,
+                colors: msg.player?.colors,
+                shirtUrl: msg.player?.shirtUrl,
+                pantsUrl: msg.player?.pantsUrl,
                 position: msg.position,
                 velocity: msg.velocity,
                 rotationY: msg.rotationY,
@@ -572,7 +657,7 @@ export default function GameWorld({
           const now = Date.now();
           snapshot.forEach((docSnap) => {
             const p = docSnap.data() as ActiveServerPlayer;
-            if (p && p.uid !== myUid && p.updatedAt && now - p.updatedAt < 20000) {
+            if (p && p.uid !== myUid && p.updatedAt && Math.abs(now - p.updatedAt) < 30000) {
               handleIncomingPlayerData(p);
             }
           });

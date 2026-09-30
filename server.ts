@@ -93,6 +93,7 @@ wss.on('connection', (ws: WebSocket) => {
         const moveBroadcast = JSON.stringify({
           type: 'player_moved',
           uid: currentUid,
+          player: entry ? entry.player : msg.player,
           position: msg.position,
           velocity: msg.velocity || [0, 0, 0],
           rotationY: msg.rotationY,
