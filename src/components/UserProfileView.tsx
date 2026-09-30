@@ -25,7 +25,12 @@ import { getStoredInventory } from '../utils/inventoryStorage.ts';
 import ClothingDummyPreview from './marketplace/ClothingDummyPreview.tsx';
 import MarketplaceItemDetailsView from './marketplace/MarketplaceItemDetailsView.tsx';
 import { MarketplaceItem, findMarketplaceItemByUrl } from '../utils/marketplaceItems.ts';
-import { FriendUser } from '../utils/friendsStorage.ts';
+import {
+  FriendUser,
+  subscribeToMyFriends,
+  subscribeToFollowing,
+  subscribeToFollowers,
+} from '../utils/friendsStorage.ts';
 import { db, doc, updateDoc } from '../utils/firebase.ts';
 
 export interface UserProfileViewProps {
@@ -144,7 +149,29 @@ export default function UserProfileView({
     };
   });
 
-  // Keep profile in sync if viewingUser or isOwnProfile changes
+  // Active target UID for live stats
+  const targetUid = isOwnProfile ? (currentUserId || 'local') : viewingUser?.uid || 'local';
+
+  // Live counts for Friends, Followers, and Following
+  useEffect(() => {
+    if (!targetUid) return;
+
+    const unsubFriends = subscribeToMyFriends(targetUid, (list) => {
+      setProfile((prev) => ({ ...prev, friendsCount: list.length }));
+    });
+    const unsubFollowing = subscribeToFollowing(targetUid, (list) => {
+      setProfile((prev) => ({ ...prev, followingCount: list.length }));
+    });
+    const unsubFollowers = subscribeToFollowers(targetUid, (list) => {
+      setProfile((prev) => ({ ...prev, followersCount: list.length }));
+    });
+
+    return () => {
+      unsubFriends();
+      unsubFollowing();
+      unsubFollowers();
+    };
+  }, [targetUid]);
   useEffect(() => {
     if (isOwnProfile) {
       try {
@@ -862,6 +889,10 @@ export default function UserProfileView({
                         <ClothingDummyPreview
                           clothingType={item.type}
                           textureUrl={item.url}
+                          showUserAvatar={true}
+                          avatarColors={activeColors}
+                          userShirtUrl={activeShirt}
+                          userPantsUrl={activePants}
                           className="w-full h-full"
                         />
                       )}

@@ -14,8 +14,13 @@ interface ClothingDummyPreviewProps {
   userPantsUrl?: string | null;
 }
 
+const textureCache = new Map<string, THREE.Texture>();
+
 function loadTexture(url: string): Promise<THREE.Texture> {
-  return new Promise((resolve, reject) => {
+  if (textureCache.has(url)) {
+    return Promise.resolve(textureCache.get(url)!);
+  }
+  return new Promise((resolve) => {
     const img = new Image();
     if (!url.startsWith('data:')) {
       img.crossOrigin = 'anonymous';
@@ -27,9 +32,51 @@ function loadTexture(url: string): Promise<THREE.Texture> {
       texture.minFilter = THREE.LinearMipmapLinearFilter;
       texture.magFilter = THREE.NearestFilter;
       texture.needsUpdate = true;
+      textureCache.set(url, texture);
       resolve(texture);
     };
-    img.onerror = reject;
+    img.onerror = () => {
+      // Fallback loader without crossOrigin
+      const imgFallback = new Image();
+      imgFallback.onload = () => {
+        try {
+          const canvas = document.createElement('canvas');
+          canvas.width = imgFallback.width || 512;
+          canvas.height = imgFallback.height || 512;
+          const ctx = canvas.getContext('2d');
+          if (ctx) {
+            ctx.drawImage(imgFallback, 0, 0);
+            const texture = new THREE.CanvasTexture(canvas);
+            texture.colorSpace = THREE.SRGBColorSpace;
+            texture.needsUpdate = true;
+            textureCache.set(url, texture);
+            resolve(texture);
+            return;
+          }
+        } catch {}
+        const canvas = document.createElement('canvas');
+        canvas.width = 128;
+        canvas.height = 128;
+        const ctx = canvas.getContext('2d')!;
+        ctx.fillStyle = '#2b3038';
+        ctx.fillRect(0, 0, 128, 128);
+        const texture = new THREE.CanvasTexture(canvas);
+        textureCache.set(url, texture);
+        resolve(texture);
+      };
+      imgFallback.onerror = () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = 128;
+        canvas.height = 128;
+        const ctx = canvas.getContext('2d')!;
+        ctx.fillStyle = '#2b3038';
+        ctx.fillRect(0, 0, 128, 128);
+        const texture = new THREE.CanvasTexture(canvas);
+        textureCache.set(url, texture);
+        resolve(texture);
+      };
+      imgFallback.src = url;
+    };
     img.src = url;
   });
 }

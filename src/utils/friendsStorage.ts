@@ -441,9 +441,27 @@ export async function removeFriend(friendUid: string, myUid: string): Promise<vo
 
 // Follow User
 export async function followUser(
-  myUser: { uid: string; username: string; displayName?: string; avatarColors?: AvatarColors; shirtUrl?: string | null },
-  targetUser: { uid: string; username: string; displayName?: string; avatarColors?: AvatarColors; shirtUrl?: string | null }
+  myUser: {
+    uid: string;
+    username: string;
+    displayName?: string;
+    avatarColors?: AvatarColors;
+    shirtUrl?: string | null;
+    pantsUrl?: string | null;
+    backgroundUrl?: string | null;
+  },
+  targetUser: {
+    uid: string;
+    username: string;
+    displayName?: string;
+    avatarColors?: AvatarColors;
+    shirtUrl?: string | null;
+    pantsUrl?: string | null;
+    backgroundUrl?: string | null;
+  }
 ): Promise<void> {
+  if (!myUser.uid || !targetUser.uid) return;
+
   const following = getSavedFollowing(myUser.uid);
   if (following.some((f) => f.uid === targetUser.uid)) return;
 
@@ -453,22 +471,33 @@ export async function followUser(
     displayName: targetUser.displayName || targetUser.username,
     avatarColors: targetUser.avatarColors,
     shirtUrl: targetUser.shirtUrl || null,
+    pantsUrl: targetUser.pantsUrl || null,
+    backgroundUrl: targetUser.backgroundUrl || null,
     followedAt: Date.now(),
   };
   following.unshift(record);
   saveFollowingLocally(myUser.uid, following);
 
+  const targetFollowers = getSavedFollowers(targetUser.uid);
+  const followerRecord: FollowRecord = {
+    uid: myUser.uid,
+    username: myUser.username,
+    displayName: myUser.displayName || myUser.username,
+    avatarColors: myUser.avatarColors,
+    shirtUrl: myUser.shirtUrl || null,
+    pantsUrl: myUser.pantsUrl || null,
+    backgroundUrl: myUser.backgroundUrl || null,
+    followedAt: Date.now(),
+  };
+  if (!targetFollowers.some((f) => f.uid === myUser.uid)) {
+    targetFollowers.unshift(followerRecord);
+    saveFollowersLocally(targetUser.uid, targetFollowers);
+  }
+
   if (db) {
     try {
       await setDoc(doc(db, 'users', myUser.uid, 'following', targetUser.uid), record);
-      await setDoc(doc(db, 'users', targetUser.uid, 'followers', myUser.uid), {
-        uid: myUser.uid,
-        username: myUser.username,
-        displayName: myUser.displayName || myUser.username,
-        avatarColors: myUser.avatarColors,
-        shirtUrl: myUser.shirtUrl || null,
-        followedAt: Date.now(),
-      });
+      await setDoc(doc(db, 'users', targetUser.uid, 'followers', myUser.uid), followerRecord);
     } catch (err) {
       console.error('[Friends] Error writing follow in Firestore:', err);
     }
@@ -477,8 +506,13 @@ export async function followUser(
 
 // Unfollow User
 export async function unfollowUser(myUid: string, targetUid: string): Promise<void> {
+  if (!myUid || !targetUid) return;
+
   const following = getSavedFollowing(myUid).filter((f) => f.uid !== targetUid);
   saveFollowingLocally(myUid, following);
+
+  const targetFollowers = getSavedFollowers(targetUid).filter((f) => f.uid !== myUid);
+  saveFollowersLocally(targetUid, targetFollowers);
 
   if (db) {
     try {

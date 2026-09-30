@@ -42,11 +42,13 @@ import { SavedGame, getSavedGames, DEFAULT_TEST_PLACE, subscribeToLiveGames } fr
 import {
   getSavedFriends,
   subscribeToMyFriends,
+  subscribeToFollowing,
   sendFriendRequest,
   removeFriend,
   followUser,
   unfollowUser,
   FriendUser,
+  FollowRecord,
 } from './utils/friendsStorage.ts';
 import Avatar3DIcon from './components/common/Avatar3DIcon.tsx';
 import AuthPage from './components/auth/AuthPage.tsx';
@@ -147,15 +149,22 @@ function AppContent() {
   );
   const [editingClothingItem, setEditingClothingItem] = useState<ClothingItem | null>(null);
   const [friendsList, setFriendsList] = useState<FriendUser[]>([]);
+  const [followingList, setFollowingList] = useState<FollowRecord[]>([]);
   const [viewingUserProfile, setViewingUserProfile] = useState<FriendUser | null>(null);
 
-  // Subscribe to real Firestore friends
+  // Subscribe to real Firestore friends & following
   useEffect(() => {
     if (!currentUser?.uid) return;
-    const unsub = subscribeToMyFriends(currentUser.uid, (list) => {
+    const unsubFriends = subscribeToMyFriends(currentUser.uid, (list) => {
       setFriendsList(list);
     });
-    return () => unsub();
+    const unsubFollowing = subscribeToFollowing(currentUser.uid, (list) => {
+      setFollowingList(list);
+    });
+    return () => {
+      unsubFriends();
+      unsubFollowing();
+    };
   }, [currentUser?.uid]);
 
   // Profile Name (username and display name same)
@@ -662,12 +671,34 @@ function AppContent() {
                 removeFriend(targetUid, currentUser?.uid || 'local');
               }}
               onToggleFollow={(target) => {
-                followUser(
-                  { uid: currentUser?.uid || 'local', username: profileName, avatarColors, shirtUrl: activeShirtUrl },
-                  target
-                );
+                const isFol = followingList.some((f) => f.uid === target.uid);
+                if (isFol) {
+                  unfollowUser(currentUser?.uid || 'local', target.uid);
+                } else {
+                  followUser(
+                    {
+                      uid: currentUser?.uid || 'local',
+                      username: profileName,
+                      displayName: currentUser?.displayName || profileName,
+                      avatarColors,
+                      shirtUrl: activeShirtUrl,
+                      pantsUrl: activePantsUrl,
+                      backgroundUrl: equippedBackgroundUrl,
+                    },
+                    {
+                      uid: target.uid,
+                      username: target.username,
+                      displayName: target.displayName || target.username,
+                      avatarColors: target.avatarColors,
+                      shirtUrl: target.shirtUrl,
+                      pantsUrl: target.pantsUrl,
+                      backgroundUrl: target.backgroundUrl,
+                    }
+                  );
+                }
               }}
               isFriend={viewingUserProfile ? friendsList.some((f) => f.uid === viewingUserProfile.uid) : false}
+              isFollowing={viewingUserProfile ? followingList.some((f) => f.uid === viewingUserProfile.uid) : false}
             />
           ) : activeTab === 'friends' ? (
             /* FRIENDS VIEW */
