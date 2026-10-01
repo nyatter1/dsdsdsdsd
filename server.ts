@@ -12,6 +12,14 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const server = http.createServer(app);
 
+// Force mobile browsers (like Edge Mobile or Safari) to re-fetch live updates instantly without stale memory caching
+app.use((_req, res, next) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+  next();
+});
+
 // In-memory active game rooms for ultra-smooth real-time multiplayer
 interface PlayerData {
   uid: string;
