@@ -8,6 +8,7 @@ import { LuaRuntime } from '../utils/luaEngine.ts';
 import RobloxGuiRenderer from './ui-engine/RobloxGuiRenderer.tsx';
 import { db, auth, doc, setDoc, deleteDoc, onSnapshot, collection } from '../utils/firebase.ts';
 import InGameChat, { ChatMessage } from './game/InGameChat.tsx';
+import MobileGameControls from './game/MobileGameControls.tsx';
 import { createChatBubbleSprite } from '../utils/chatBubble3D.ts';
 
 export interface ActiveServerPlayer {
@@ -38,8 +39,13 @@ interface GameWorldProps {
   onExitGame: () => void;
 }
 
+const robloxTextureCache = new Map<string, THREE.Texture>();
+
 function loadRobloxTexture(url: string): Promise<THREE.Texture> {
-  return new Promise((resolve, reject) => {
+  if (robloxTextureCache.has(url)) {
+    return Promise.resolve(robloxTextureCache.get(url)!);
+  }
+  return new Promise((resolve) => {
     const img = new Image();
     if (!url.startsWith('data:')) {
       img.crossOrigin = 'anonymous';
@@ -51,9 +57,51 @@ function loadRobloxTexture(url: string): Promise<THREE.Texture> {
       texture.minFilter = THREE.LinearMipmapLinearFilter;
       texture.magFilter = THREE.NearestFilter;
       texture.needsUpdate = true;
+      robloxTextureCache.set(url, texture);
       resolve(texture);
     };
-    img.onerror = (err) => reject(err);
+    img.onerror = () => {
+      // Fallback loader without crossOrigin for Cloudinary / external uploads
+      const imgFallback = new Image();
+      imgFallback.onload = () => {
+        try {
+          const canvas = document.createElement('canvas');
+          canvas.width = imgFallback.width || 512;
+          canvas.height = imgFallback.height || 512;
+          const ctx = canvas.getContext('2d');
+          if (ctx) {
+            ctx.drawImage(imgFallback, 0, 0);
+            const texture = new THREE.CanvasTexture(canvas);
+            texture.colorSpace = THREE.SRGBColorSpace;
+            texture.needsUpdate = true;
+            robloxTextureCache.set(url, texture);
+            resolve(texture);
+            return;
+          }
+        } catch {}
+        const canvas = document.createElement('canvas');
+        canvas.width = 128;
+        canvas.height = 128;
+        const ctx = canvas.getContext('2d')!;
+        ctx.fillStyle = '#2b3038';
+        ctx.fillRect(0, 0, 128, 128);
+        const texture = new THREE.CanvasTexture(canvas);
+        robloxTextureCache.set(url, texture);
+        resolve(texture);
+      };
+      imgFallback.onerror = () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = 128;
+        canvas.height = 128;
+        const ctx = canvas.getContext('2d')!;
+        ctx.fillStyle = '#2b3038';
+        ctx.fillRect(0, 0, 128, 128);
+        const texture = new THREE.CanvasTexture(canvas);
+        robloxTextureCache.set(url, texture);
+        resolve(texture);
+      };
+      imgFallback.src = url;
+    };
     img.src = url;
   });
 }
@@ -383,6 +431,24 @@ export default function GameWorld({
   const lastFirebaseUpdateTimeRef = useRef<number | null>(null);
   const lastRemotePlayerUpdateTimeRef = useRef<number | null>(null);
   const [livePing, setLivePing] = useState<number>(20);
+  const localPlayerSeenRef = useRef<Map<string, number>>(new Map());
+
+  // Mobile / Touch device detection (auto updates on resize)
+  const [isMobile, setIsMobile] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return 'ontouchstart' in window || navigator.maxTouchPoints > 0 || window.innerWidth <= 768;
+  });
+
+  useEffect(() => {
+    const checkMobile = () => {
+      setIsMobile('ontouchstart' in window || navigator.maxTouchPoints > 0 || window.innerWidth <= 768);
+    };
+    window.addEventListener('resize', checkMobile);
+    return () => window.removeEventListener('resize', checkMobile);
+  }, []);
+
+  const joystickVectorRef = useRef({ forward: 0, right: 0 });
+  const isMobileJumpPressedRef = useRef(false);
 
   // Network transport refs
   const wsRef = useRef<WebSocket | null>(null);
@@ -391,6 +457,7 @@ export default function GameWorld({
   const lastFirestoreMovementPush = useRef(0);
   const lastMotionState = useRef({ isMoving: false, isGrounded: true });
   const isWritingFirestoreRef = useRef(false);
+  const hasPendingPushRef = useRef(false);
 
   const sceneRef = useRef<THREE.Scene | null>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
@@ -600,7 +667,13 @@ export default function GameWorld({
       rData.lastPacketTime = performance.now();
 
       if (p.shirtUrl !== undefined || p.pantsUrl !== undefined) {
-        rData.updateClothing(p.shirtUrl || null, p.pantsUrl || null);
+        const nextShirt = p.shirtUrl !== undefined ? (p.shirtUrl || null) : rData.loadedShirtUrl;
+        const nextPants = p.pantsUrl !== undefined ? (p.pantsUrl || null) : rData.loadedPantsUrl;
+        if (nextShirt !== rData.loadedShirtUrl || nextPants !== rData.loadedPantsUrl) {
+          rData.loadedShirtUrl = nextShirt;
+          rData.loadedPantsUrl = nextPants;
+          rData.updateClothing(nextShirt, nextPants);
+        }
       }
       if (p.colors) {
         rData.updateColors(p.colors);
@@ -622,16 +695,19 @@ export default function GameWorld({
   const pushPlayerPresence = useCallback(
     async (isHeartbeat: boolean) => {
       if (!db || !playerId) return;
-      if (isWritingFirestoreRef.current) return;
+      if (isWritingFirestoreRef.current) {
+        hasPendingPushRef.current = true;
+        return;
+      }
       isWritingFirestoreRef.current = true;
 
       const now = Date.now();
       const playerDoc: ActiveServerPlayer = {
         uid: playerId,
-        accountUid,
+        accountUid: accountUid || null,
         sessionId: playerId,
-        username: myUsername,
-        displayName: myDisplayName,
+        username: myUsername || 'Player',
+        displayName: myDisplayName || myUsername || 'Player',
         position: [
           playerState.current.position.x,
           playerState.current.position.y,
@@ -643,18 +719,26 @@ export default function GameWorld({
           playerState.current.velocity.z,
         ],
         rotationY: playerState.current.rotationY,
-        isMoving: playerState.current.isMoving,
-        isGrounded: playerState.current.isGrounded,
-        colors,
-        shirtUrl,
-        pantsUrl,
+        isMoving: Boolean(playerState.current.isMoving),
+        isGrounded: Boolean(playerState.current.isGrounded),
+        colors: colors || {
+          head: '#f5cd2f',
+          torso: '#0d69ac',
+          leftArm: '#f5cd2f',
+          rightArm: '#f5cd2f',
+          leftLeg: '#a0a528',
+          rightLeg: '#a0a528',
+        },
+        shirtUrl: shirtUrl || null,
+        pantsUrl: pantsUrl || null,
         lastSeen: now,
         joinedAt: joinedAtRef.current,
-        ping: livePing,
+        ping: livePing || 20,
       };
 
       try {
-        await setDoc(doc(db, 'games', gameId, 'players', playerId), playerDoc, { merge: true });
+        const cleanDoc = JSON.parse(JSON.stringify(playerDoc));
+        await setDoc(doc(db, 'games', gameId, 'players', playerId), cleanDoc, { merge: true });
         lastFirebaseUpdateTimeRef.current = now;
         setFirebaseStatus('CONNECTED');
       } catch (error) {
@@ -662,6 +746,10 @@ export default function GameWorld({
         setFirebaseStatus('ERROR');
       } finally {
         isWritingFirestoreRef.current = false;
+        if (hasPendingPushRef.current) {
+          hasPendingPushRef.current = false;
+          pushPlayerPresence(false);
+        }
       }
     },
     [gameId, playerId, accountUid, myUsername, myDisplayName, colors, shirtUrl, pantsUrl, livePing]
@@ -816,20 +904,20 @@ export default function GameWorld({
               if (!p || !p.uid) return;
               if (p.uid === playerId) return; // Ignore our own player ID
 
-              const seen = p.lastSeen || (p as any).updatedAt || 0;
-              // Accept players active within the last 10 seconds
-              if (now - seen < 10000) {
-                activeList.push(p);
-                handleIncomingPlayerData(p);
-              }
+              localPlayerSeenRef.current.set(p.uid, now);
+              activeList.push(p);
+              handleIncomingPlayerData(p);
             });
 
-            // Evict remote player models that disappeared from the room
+            // Evict remote player models that disappeared from the room or timed out locally
             remoteMeshesRef.current.forEach((rData, uid) => {
-              if (!activeList.some((ap) => ap.uid === uid) && uid !== playerId) {
+              const lastLocalTime = localPlayerSeenRef.current.get(uid) || 0;
+              const isLocallyStale = now - lastLocalTime > 16000;
+              if ((!activeList.some((ap) => ap.uid === uid) || isLocallyStale) && uid !== playerId) {
                 console.log(`[Multiplayer] Evicting player not in active list: ${uid}`);
                 sceneRef.current?.remove(rData.group);
                 remoteMeshesRef.current.delete(uid);
+                localPlayerSeenRef.current.delete(uid);
               }
             });
 
@@ -906,17 +994,17 @@ export default function GameWorld({
       pushPlayerPresence(true);
     }, 1000);
 
-    // 6. Stale player eviction timer every 2000ms (Phase 2)
+    // 6. Stale player eviction timer every 2000ms (Clock skew immune)
     const staleEvictionTimer = setInterval(() => {
       if (!isMounted) return;
       const now = Date.now();
-      const timeoutLimit = 8000; // 8 seconds stale cutoff
+      const timeoutLimit = 16000; // 16 seconds local cutoff
 
       updateServerPlayersList((prev) => {
         const fresh = prev.filter((p) => {
           if (p.uid === playerId) return true;
-          const seen = p.lastSeen || (p as any).updatedAt || 0;
-          const isStale = now - seen > timeoutLimit;
+          const lastLocalTime = localPlayerSeenRef.current.get(p.uid) || 0;
+          const isStale = now - lastLocalTime > timeoutLimit;
           if (isStale) {
             console.log(`[Multiplayer] Stale player timed out: ${p.displayName || p.username} (${p.uid})`);
             const rData = remoteMeshesRef.current.get(p.uid);
@@ -924,6 +1012,7 @@ export default function GameWorld({
               sceneRef.current.remove(rData.group);
               remoteMeshesRef.current.delete(p.uid);
             }
+            localPlayerSeenRef.current.delete(p.uid);
             return false;
           }
           return true;
@@ -1578,7 +1667,7 @@ export default function GameWorld({
         triggerPlayerDeath();
       }
 
-      // Movement Input
+      // Movement Input (WASD / Arrow Keys + Mobile Thumbstick)
       let inputForward = 0;
       let inputRight = 0;
 
@@ -1587,6 +1676,11 @@ export default function GameWorld({
         if (keys['s'] || keys['arrowdown']) inputForward -= 1;
         if (keys['d'] || keys['arrowright']) inputRight += 1;
         if (keys['a'] || keys['arrowleft']) inputRight -= 1;
+
+        if (joystickVectorRef.current.forward !== 0 || joystickVectorRef.current.right !== 0) {
+          inputForward += joystickVectorRef.current.forward;
+          inputRight += joystickVectorRef.current.right;
+        }
       }
 
       const isInputMoving = inputForward !== 0 || inputRight !== 0;
@@ -1596,8 +1690,8 @@ export default function GameWorld({
 
       if (!state.isDead && isInputMoving) {
         const len = Math.hypot(inputForward, inputRight);
-        const normForward = inputForward / len;
-        const normRight = inputRight / len;
+        const normForward = inputForward / Math.max(1, len);
+        const normRight = inputRight / Math.max(1, len);
 
         const forwardX = -Math.sin(cam.theta);
         const forwardZ = -Math.cos(cam.theta);
@@ -1620,13 +1714,14 @@ export default function GameWorld({
         state.velocity.z *= 0.72;
       }
 
-      // Jump & Gravity
+      // Jump & Gravity (Space bar or Mobile Jump Button)
       const gravity = -38.0;
       const jumpStrength = 15.5;
 
-      if (!state.isDead && keys[' '] && state.isGrounded) {
+      if (!state.isDead && (keys[' '] || isMobileJumpPressedRef.current) && state.isGrounded) {
         state.velocity.y = jumpStrength;
         state.isGrounded = false;
+        isMobileJumpPressedRef.current = false;
       }
 
       state.velocity.y += gravity * dt;
@@ -1941,10 +2036,12 @@ export default function GameWorld({
             rData.targetRotY = protY;
             rData.isMoving = Boolean(p.isMoving);
             rData.isGrounded = p.isGrounded !== false;
-            if (p.shirtUrl !== rData.loadedShirtUrl || p.pantsUrl !== rData.loadedPantsUrl) {
-              rData.loadedShirtUrl = p.shirtUrl || null;
-              rData.loadedPantsUrl = p.pantsUrl || null;
-              rData.updateClothing(p.shirtUrl || null, p.pantsUrl || null);
+            const nextShirt = p.shirtUrl !== undefined ? (p.shirtUrl || null) : rData.loadedShirtUrl;
+            const nextPants = p.pantsUrl !== undefined ? (p.pantsUrl || null) : rData.loadedPantsUrl;
+            if (nextShirt !== rData.loadedShirtUrl || nextPants !== rData.loadedPantsUrl) {
+              rData.loadedShirtUrl = nextShirt;
+              rData.loadedPantsUrl = nextPants;
+              rData.updateClothing(nextShirt, nextPants);
             }
           }
         });
@@ -2161,6 +2258,20 @@ export default function GameWorld({
         messages={chatMessages}
         myPlayerId={playerId}
         onSendMessage={handleSendChatMessage}
+      />
+
+      {/* Mobile Touch Controls (Thumbstick + Jump Button) - Only rendered on mobile devices, hidden on PC */}
+      <MobileGameControls
+        isMobile={isMobile}
+        onJoystickMove={(forward, right) => {
+          joystickVectorRef.current = { forward, right };
+        }}
+        onJumpPress={() => {
+          isMobileJumpPressedRef.current = true;
+        }}
+        onJumpRelease={() => {
+          isMobileJumpPressedRef.current = false;
+        }}
       />
 
       {/* Top Right Roblox Leaderboard */}

@@ -3,6 +3,8 @@ import http from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import JSZip from 'jszip';
+import fs from 'fs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -167,6 +169,61 @@ app.get('/api/games/active-counts', (_req, res) => {
     counts[gameId] = room.size;
   });
   res.json({ counts });
+});
+
+// API route to stream and download the entire codebase as a .zip file
+app.get('/api/download-zip', async (_req, res) => {
+  try {
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', 'attachment; filename="Rovix_Complete_Site.zip"');
+
+    const zip = new JSZip();
+    const rootDir = path.resolve(__dirname);
+    const ignored = new Set(['node_modules', '.git', 'dist', '.vite', '.cache', 'coverage']);
+
+    function addDirectoryToZip(dirPath: string, zipFolder: JSZip) {
+      try {
+        const files = fs.readdirSync(dirPath);
+        for (const file of files) {
+          if (ignored.has(file) || file.endsWith('.log')) continue;
+          const fullPath = path.join(dirPath, file);
+          try {
+            const stat = fs.statSync(fullPath);
+
+            if (stat.isDirectory()) {
+              const subFolder = zipFolder.folder(file);
+              if (subFolder) {
+                addDirectoryToZip(fullPath, subFolder);
+              }
+            } else if (stat.isFile()) {
+              const content = fs.readFileSync(fullPath);
+              zipFolder.file(file, content);
+            }
+          } catch (_fErr) {
+            // Skip unreadable files or broken symlinks
+          }
+        }
+      } catch (_dErr) {
+        // Skip unreadable directories
+      }
+    }
+
+    addDirectoryToZip(rootDir, zip);
+
+    const stream = zip.generateNodeStream({
+      type: 'nodebuffer',
+      streamFiles: true,
+      compression: 'DEFLATE',
+      compressionOptions: { level: 6 },
+    });
+
+    stream.pipe(res);
+  } catch (err) {
+    console.error('[ZIP error]:', err);
+    if (!res.headersSent) {
+      res.status(500).send('Error generating ZIP archive');
+    }
+  }
 });
 
 // Mount Vite in development or serve static in production

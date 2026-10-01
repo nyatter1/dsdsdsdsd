@@ -18,6 +18,9 @@ import {
   ShoppingBag,
   Image as ImageIcon,
   EyeOff,
+  Smartphone,
+  Download,
+  FolderArchive,
 } from 'lucide-react';
 import AvatarCanvas3D, { AvatarColors, BodyPart } from './components/AvatarCanvas3D.tsx';
 import ClothingManager from './components/ClothingManager.tsx';
@@ -27,6 +30,7 @@ import RovixStudio from './components/RovixStudio.tsx';
 import UserProfileView from './components/UserProfileView.tsx';
 import FriendsView from './components/friends/FriendsView.tsx';
 import HomeFriendsHeader from './components/home/HomeFriendsHeader.tsx';
+import DownloadZipModal from './components/home/DownloadZipModal.tsx';
 import MarketplaceCatalogView from './components/marketplace/MarketplaceCatalogView.tsx';
 import MarketplaceItemDetailsView from './components/marketplace/MarketplaceItemDetailsView.tsx';
 import MarketplaceBackgroundDetailsView from './components/marketplace/MarketplaceBackgroundDetailsView.tsx';
@@ -38,19 +42,23 @@ import {
   getEquippedBackgroundItem,
 } from './utils/backgroundsStorage.ts';
 import { getSavedAvatar, saveAvatarToStorage, ClothingItem } from './utils/inventoryStorage.ts';
+import { uploadToCloudinary } from './utils/cloudinary.ts';
 import { SavedGame, getSavedGames, DEFAULT_TEST_PLACE, subscribeToLiveGames } from './utils/gamesStorage.ts';
 import {
   getSavedFriends,
   subscribeToMyFriends,
   subscribeToFollowing,
+  subscribeToFriendRequests,
   sendFriendRequest,
   removeFriend,
   followUser,
   unfollowUser,
   FriendUser,
   FollowRecord,
+  FriendRequest,
 } from './utils/friendsStorage.ts';
 import Avatar3DIcon from './components/common/Avatar3DIcon.tsx';
+import MoreHubView from './components/navigation/MoreHubView.tsx';
 import AuthPage from './components/auth/AuthPage.tsx';
 import {
   auth,
@@ -150,9 +158,11 @@ function AppContent() {
   const [editingClothingItem, setEditingClothingItem] = useState<ClothingItem | null>(null);
   const [friendsList, setFriendsList] = useState<FriendUser[]>([]);
   const [followingList, setFollowingList] = useState<FollowRecord[]>([]);
+  const [friendRequests, setFriendRequests] = useState<FriendRequest[]>([]);
   const [viewingUserProfile, setViewingUserProfile] = useState<FriendUser | null>(null);
+  const [showDownloadZipModal, setShowDownloadZipModal] = useState(false);
 
-  // Subscribe to real Firestore friends & following
+  // Subscribe to real Firestore friends, following & friend requests
   useEffect(() => {
     if (!currentUser?.uid) return;
     const unsubFriends = subscribeToMyFriends(currentUser.uid, (list) => {
@@ -161,9 +171,13 @@ function AppContent() {
     const unsubFollowing = subscribeToFollowing(currentUser.uid, (list) => {
       setFollowingList(list);
     });
+    const unsubRequests = subscribeToFriendRequests(currentUser.uid, (reqs) => {
+      setFriendRequests(reqs);
+    });
     return () => {
       unsubFriends();
       unsubFollowing();
+      unsubRequests();
     };
   }, [currentUser?.uid]);
 
@@ -240,22 +254,46 @@ function AppContent() {
       pantsUrl: activePantsUrl,
     });
 
+    // Auto-migrate any base64 image to Cloudinary so Firestore stays tiny and fast
+    if (activeShirtUrl && activeShirtUrl.startsWith('data:image/')) {
+      uploadToCloudinary(activeShirtUrl, 'clothing')
+        .then((url) => {
+          if (url) setActiveShirtUrl(url);
+        })
+        .catch(() => {});
+    }
+    if (activePantsUrl && activePantsUrl.startsWith('data:image/')) {
+      uploadToCloudinary(activePantsUrl, 'clothing')
+        .then((url) => {
+          if (url) setActivePantsUrl(url);
+        })
+        .catch(() => {});
+    }
+    if (equippedBackgroundUrl && equippedBackgroundUrl.startsWith('data:image/')) {
+      uploadToCloudinary(equippedBackgroundUrl, 'profile_backgrounds')
+        .then((url) => {
+          if (url) setEquippedBackgroundUrl(url);
+        })
+        .catch(() => {});
+    }
+
     if (db && currentUser?.uid) {
-      setDoc(
-        doc(db, 'users', currentUser.uid),
-        {
+      const cleanUserDoc = JSON.parse(
+        JSON.stringify({
           uid: currentUser.uid,
-          username: currentUser.username,
-          displayName: currentUser.displayName || currentUser.username,
+          username: currentUser.username || profileName,
+          displayName: currentUser.displayName || currentUser.username || profileName,
           avatarColors,
-          activeShirtUrl,
-          activePantsUrl,
-          equippedBackgroundUrl,
-          backgroundUrl: equippedBackgroundUrl,
+          activeShirtUrl: activeShirtUrl || null,
+          shirtUrl: activeShirtUrl || null,
+          activePantsUrl: activePantsUrl || null,
+          pantsUrl: activePantsUrl || null,
+          equippedBackgroundUrl: equippedBackgroundUrl || null,
+          backgroundUrl: equippedBackgroundUrl || null,
           bio: currentUser.bio || '',
-        },
-        { merge: true }
-      ).catch(() => {});
+        })
+      );
+      setDoc(doc(db, 'users', currentUser.uid), cleanUserDoc, { merge: true }).catch(() => {});
     }
   }, [avatarColors, activeShirtUrl, activePantsUrl, equippedBackgroundUrl, currentUser?.uid]);
 
@@ -444,6 +482,16 @@ function AppContent() {
         <div className="flex items-center gap-2 sm:gap-2.5">
           <button
             type="button"
+            onClick={() => setShowDownloadZipModal(true)}
+            className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-blue-600/20 to-indigo-600/20 hover:from-blue-600/30 hover:to-indigo-600/30 text-blue-300 hover:text-white text-xs font-bold border border-blue-500/30 rounded transition-all cursor-pointer shadow-xs"
+            title="Download Entire Site (.ZIP)"
+          >
+            <FolderArchive className="w-3.5 h-3.5 text-blue-400" />
+            <span>Download .ZIP</span>
+          </button>
+
+          <button
+            type="button"
             onClick={() => {
               setViewingUserProfile(null);
               setActiveTab('profile');
@@ -477,6 +525,7 @@ function AppContent() {
                   type="button"
                   onClick={() => {
                     setShowSettingsMenu(false);
+                    setViewingUserProfile(null);
                     setActiveTab('profile');
                   }}
                   className="w-full text-left px-3 py-1.5 text-xs text-neutral-300 hover:text-white hover:bg-[#2b2d31] transition-colors cursor-pointer"
@@ -507,13 +556,16 @@ function AppContent() {
 
       {/* 2. BODY CONTAINER: Left Sidebar + Main Content */}
       <div className="flex flex-1 overflow-hidden">
-        {/* LEFT SIDEBAR WITH STUDIO */}
-        <aside className="w-14 bg-[#191b1d] border-r border-[#26282b] flex flex-col items-center py-2.5 shrink-0 z-20">
+        {/* LEFT SIDEBAR WITH STUDIO (Desktop only) */}
+        <aside className="hidden md:flex w-14 bg-[#191b1d] border-r border-[#26282b] flex-col items-center py-2.5 shrink-0 z-20">
           <div className="flex flex-col items-center gap-1.5 w-full px-1.5">
             <button
               type="button"
               title="Home"
-              onClick={() => setActiveTab('home')}
+              onClick={() => {
+                setViewingUserProfile(null);
+                setActiveTab('home');
+              }}
               className={`w-10 h-10 flex items-center justify-center transition-all ${
                 activeTab === 'home'
                   ? 'bg-[#2e3135] text-white border-l-2 border-white'
@@ -526,7 +578,10 @@ function AppContent() {
             <button
               type="button"
               title="Discover"
-              onClick={() => setActiveTab('discover')}
+              onClick={() => {
+                setViewingUserProfile(null);
+                setActiveTab('discover');
+              }}
               className={`w-10 h-10 flex items-center justify-center transition-all ${
                 activeTab === 'discover'
                   ? 'bg-[#2e3135] text-white border-l-2 border-white'
@@ -538,7 +593,7 @@ function AppContent() {
 
             <button
               type="button"
-              title={`Profile (${profileName})`}
+              title={`My Profile (${profileName})`}
               onClick={() => {
                 setViewingUserProfile(null);
                 setActiveTab('profile');
@@ -555,7 +610,10 @@ function AppContent() {
             <button
               type="button"
               title="Friends"
-              onClick={() => setActiveTab('friends')}
+              onClick={() => {
+                setViewingUserProfile(null);
+                setActiveTab('friends');
+              }}
               className={`w-10 h-10 flex items-center justify-center transition-all ${
                 activeTab === 'friends'
                   ? 'bg-[#2e3135] text-white border-l-2 border-white'
@@ -568,7 +626,10 @@ function AppContent() {
             <button
               type="button"
               title="Avatar Editor"
-              onClick={() => setActiveTab('avatar')}
+              onClick={() => {
+                setViewingUserProfile(null);
+                setActiveTab('avatar');
+              }}
               className={`w-10 h-10 flex items-center justify-center transition-all ${
                 activeTab === 'avatar'
                   ? 'bg-[#2e3135] text-white border-l-2 border-white'
@@ -583,6 +644,8 @@ function AppContent() {
               title="Marketplace"
               onClick={() => {
                 setSelectedMarketplaceItem(null);
+                setSelectedBackground(null);
+                setViewingUserProfile(null);
                 setActiveTab('marketplace');
               }}
               className={`w-10 h-10 flex items-center justify-center transition-all ${
@@ -598,7 +661,10 @@ function AppContent() {
             <button
               type="button"
               title="Rovix Studio (Creations & Uploads)"
-              onClick={() => setActiveTab('studio')}
+              onClick={() => {
+                setViewingUserProfile(null);
+                setActiveTab('studio');
+              }}
               className="w-10 h-10 flex items-center justify-center transition-all relative group text-neutral-400 hover:text-white hover:bg-[#232528]"
             >
               <Hammer className="w-5 h-5 text-blue-400 group-hover:scale-110 transition-transform" />
@@ -609,8 +675,10 @@ function AppContent() {
 
             <button
               type="button"
-              title="More"
-              onClick={() => setActiveTab('more')}
+              title="More Options"
+              onClick={() => {
+                setActiveTab('more');
+              }}
               className={`w-10 h-10 flex items-center justify-center transition-all ${
                 activeTab === 'more'
                   ? 'bg-[#2e3135] text-white border-l-2 border-white'
@@ -650,6 +718,10 @@ function AppContent() {
                 setActiveTab('studio');
               }}
               onNavigateToAvatar={() => setActiveTab('avatar')}
+              onViewMyProfile={() => {
+                setViewingUserProfile(null);
+                setActiveTab('profile');
+              }}
               onEquipShirt={(url) => setActiveShirtUrl(url)}
               onEquipPants={(url) => setActivePantsUrl(url)}
               onBack={() => {
@@ -663,7 +735,15 @@ function AppContent() {
               }}
               onAddFriend={(target) => {
                 sendFriendRequest(
-                  { uid: currentUser?.uid || 'local', username: profileName, avatarColors, shirtUrl: activeShirtUrl },
+                  {
+                    uid: currentUser?.uid || 'local',
+                    username: profileName,
+                    displayName: currentUser?.displayName || profileName,
+                    avatarColors,
+                    shirtUrl: activeShirtUrl,
+                    pantsUrl: activePantsUrl,
+                    backgroundUrl: equippedBackgroundUrl,
+                  },
                   target
                 );
               }}
@@ -699,6 +779,15 @@ function AppContent() {
               }}
               isFriend={viewingUserProfile ? friendsList.some((f) => f.uid === viewingUserProfile.uid) : false}
               isFollowing={viewingUserProfile ? followingList.some((f) => f.uid === viewingUserProfile.uid) : false}
+              isReqPending={
+                viewingUserProfile
+                  ? friendRequests.some(
+                      (r) =>
+                        (r.toUid === viewingUserProfile.uid || r.fromUid === viewingUserProfile.uid) &&
+                        r.status === 'pending'
+                    )
+                  : false
+              }
             />
           ) : activeTab === 'friends' ? (
             /* FRIENDS VIEW */
@@ -1043,9 +1132,64 @@ function AppContent() {
                 )}
               </div>
             </div>
+          ) : activeTab === 'more' ? (
+            /* MORE HUB VIEW */
+            <MoreHubView
+              username={currentUser?.username || profileName}
+              displayName={currentUser?.displayName || currentUser?.username || profileName}
+              avatarColors={avatarColors}
+              shirtUrl={activeShirtUrl}
+              onNavigateToMyProfile={() => {
+                setViewingUserProfile(null);
+                setActiveTab('profile');
+              }}
+              onNavigateToAvatar={() => setActiveTab('avatar')}
+              onNavigateToStudio={() => setActiveTab('studio')}
+              onNavigateToMarketplace={() => {
+                setSelectedMarketplaceItem(null);
+                setActiveTab('marketplace');
+              }}
+              onNavigateToFriends={() => setActiveTab('friends')}
+              onNavigateToDiscover={() => setActiveTab('discover')}
+              onDownloadZip={() => setShowDownloadZipModal(true)}
+              onLogOut={handleLogOut}
+            />
           ) : (
             /* HOME VIEW */
-            <main className="p-6 max-w-6xl w-full mx-auto space-y-8 flex-1">
+            <main className="p-4 sm:p-6 max-w-6xl w-full mx-auto space-y-6 sm:space-y-8 flex-1">
+              {/* ZIP DOWNLOAD HERO BANNER ON HOMEPAGE */}
+              <div className="bg-gradient-to-r from-blue-900/35 via-indigo-950/40 to-[#202225] border border-blue-500/30 hover:border-blue-500/50 rounded-2xl p-4 sm:p-5 flex flex-col sm:flex-row items-center justify-between gap-4 shadow-xl transition-all">
+                <div className="flex items-center gap-3.5 text-center sm:text-left">
+                  <div className="w-12 h-12 sm:w-14 sm:h-14 rounded-2xl bg-gradient-to-tr from-blue-600 to-indigo-500 border border-blue-400/40 flex items-center justify-center shadow-lg shrink-0">
+                    <FolderArchive className="w-6 h-6 sm:w-7 sm:h-7 text-white" />
+                  </div>
+                  <div>
+                    <div className="flex items-center justify-center sm:justify-start gap-2">
+                      <h3 className="text-base sm:text-lg font-black text-white tracking-wide">
+                        Download Entire Site (.ZIP)
+                      </h3>
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-blue-500/20 text-blue-300 border border-blue-500/30">
+                        FULL PROJECT
+                      </span>
+                    </div>
+                    <p className="text-xs text-neutral-300 mt-1 max-w-xl leading-relaxed">
+                      Download the complete site codebase, 3D engine, custom avatar creator, studio &amp; multiplayer backend in a single .zip file to run anywhere!
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2.5 w-full sm:w-auto shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setShowDownloadZipModal(true)}
+                    className="w-full sm:w-auto py-2.5 px-5 bg-gradient-to-r from-blue-600 hover:from-blue-500 to-indigo-600 hover:to-indigo-500 text-white text-xs font-bold rounded-xl flex items-center justify-center gap-2 shadow-lg shadow-blue-600/30 transition-all cursor-pointer border border-blue-400/40 active:scale-95"
+                  >
+                    <Download className="w-4 h-4" />
+                    <span>Download .ZIP</span>
+                  </button>
+                </div>
+              </div>
+
               {/* Friends Header at top of Home page (replaces test profile) */}
               <HomeFriendsHeader
                 friends={friendsList}
@@ -1149,60 +1293,80 @@ function AppContent() {
       </div>
 
       {/* Mobile App Navigation Dock (Fixed at bottom for mobile screens) */}
-      <div className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-[#161719]/95 backdrop-blur-lg border-t border-neutral-800 py-2.5 px-4 flex items-center justify-around text-xs text-neutral-400 select-none shadow-2xl">
+      <div className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-[#161719]/95 backdrop-blur-lg border-t border-neutral-800 py-1.5 px-2 flex items-center justify-around text-xs text-neutral-400 select-none shadow-2xl">
         <button
           type="button"
-          onClick={() => setActiveTab('home')}
-          className={`flex flex-col items-center gap-1 transition-colors cursor-pointer ${
-            (activeTab as string) === 'home' ? 'text-white font-bold' : 'text-neutral-400 hover:text-neutral-200'
+          onClick={() => {
+            setViewingUserProfile(null);
+            setActiveTab('home');
+          }}
+          className={`flex flex-col items-center gap-0.5 transition-colors cursor-pointer flex-1 py-1 ${
+            activeTab === 'home' ? 'text-white font-bold' : 'text-neutral-400 hover:text-neutral-200'
           }`}
         >
-          <Home className={`w-5 h-5 ${(activeTab as string) === 'home' ? 'text-blue-400' : ''}`} />
+          <Home className={`w-5 h-5 ${activeTab === 'home' ? 'text-blue-400' : ''}`} />
           <span className="text-[10px]">Home</span>
         </button>
 
         <button
           type="button"
-          onClick={() => setActiveTab('discover')}
-          className={`flex flex-col items-center gap-1 transition-colors cursor-pointer ${
-            (activeTab as string) === 'discover' ? 'text-white font-bold' : 'text-neutral-400 hover:text-neutral-200'
+          onClick={() => {
+            setViewingUserProfile(null);
+            setActiveTab('discover');
+          }}
+          className={`flex flex-col items-center gap-0.5 transition-colors cursor-pointer flex-1 py-1 ${
+            activeTab === 'discover' ? 'text-white font-bold' : 'text-neutral-400 hover:text-neutral-200'
           }`}
         >
-          <Compass className={`w-5 h-5 ${(activeTab as string) === 'discover' ? 'text-blue-400' : ''}`} />
+          <Compass className={`w-5 h-5 ${activeTab === 'discover' ? 'text-blue-400' : ''}`} />
           <span className="text-[10px]">Discover</span>
         </button>
 
         <button
           type="button"
-          onClick={() => setActiveTab('avatar')}
-          className={`flex flex-col items-center gap-1 transition-colors cursor-pointer ${
-            (activeTab as string) === 'avatar' ? 'text-white font-bold' : 'text-neutral-400 hover:text-neutral-200'
+          onClick={() => {
+            setViewingUserProfile(null);
+            setActiveTab('avatar');
+          }}
+          className={`flex flex-col items-center gap-0.5 transition-colors cursor-pointer flex-1 py-1 ${
+            activeTab === 'avatar' ? 'text-white font-bold' : 'text-neutral-400 hover:text-neutral-200'
           }`}
         >
-          <User className={`w-5 h-5 ${(activeTab as string) === 'avatar' ? 'text-blue-400' : ''}`} />
+          <ShirtIcon className={`w-5 h-5 ${activeTab === 'avatar' ? 'text-blue-400' : ''}`} />
           <span className="text-[10px]">Avatar</span>
         </button>
 
         <button
           type="button"
-          onClick={() => setActiveTab('marketplace')}
-          className={`flex flex-col items-center gap-1 transition-colors cursor-pointer ${
-            (activeTab as string) === 'marketplace' ? 'text-white font-bold' : 'text-neutral-400 hover:text-neutral-200'
+          onClick={() => {
+            setViewingUserProfile(null);
+            setActiveTab('profile');
+          }}
+          className={`flex flex-col items-center gap-0.5 transition-colors cursor-pointer flex-1 py-1 ${
+            activeTab === 'profile' && !viewingUserProfile ? 'text-white font-bold' : 'text-neutral-400 hover:text-neutral-200'
           }`}
+          title={`My Profile (@${profileName})`}
         >
-          <ShoppingBag className={`w-5 h-5 ${(activeTab as string) === 'marketplace' ? 'text-blue-400' : ''}`} />
-          <span className="text-[10px]">Catalog</span>
+          <div className={`w-6 h-6 rounded-full overflow-hidden border flex items-center justify-center bg-[#16181b] ${
+            activeTab === 'profile' && !viewingUserProfile ? 'border-blue-400 ring-2 ring-blue-500/50' : 'border-neutral-700'
+          }`}>
+            <Avatar3DIcon colors={avatarColors} shirtUrl={activeShirtUrl} className="w-6 h-6" />
+          </div>
+          <span className="text-[10px]">Profile</span>
         </button>
 
         <button
           type="button"
-          onClick={() => setActiveTab('studio')}
-          className={`flex flex-col items-center gap-1 transition-colors cursor-pointer ${
-            (activeTab as string) === 'studio' ? 'text-white font-bold' : 'text-neutral-400 hover:text-neutral-200'
+          onClick={() => {
+            setActiveTab('more');
+          }}
+          className={`flex flex-col items-center gap-0.5 transition-colors cursor-pointer flex-1 py-1 ${
+            activeTab === 'more' ? 'text-white font-bold' : 'text-neutral-400 hover:text-neutral-200'
           }`}
+          title="More Options"
         >
-          <Layers className={`w-5 h-5 ${(activeTab as string) === 'studio' ? 'text-blue-400' : ''}`} />
-          <span className="text-[10px]">Studio</span>
+          <MoreHorizontal className={`w-5 h-5 ${activeTab === 'more' ? 'text-blue-400' : ''}`} />
+          <span className="text-[10px]">More</span>
         </button>
       </div>
       {/* Private Game Error Modal */}
@@ -1228,6 +1392,11 @@ function AppContent() {
           </div>
         </div>
       )}
+      {/* Entire Site ZIP Download Modal */}
+      <DownloadZipModal
+        isOpen={showDownloadZipModal}
+        onClose={() => setShowDownloadZipModal(false)}
+      />
     </div>
   );
 }

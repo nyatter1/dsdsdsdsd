@@ -73,8 +73,8 @@ export async function fetchAllRealFirestoreUsers(): Promise<FriendUser[]> {
           username: data.username,
           displayName: data.displayName || data.username,
           avatarColors: data.avatarColors || undefined,
-          shirtUrl: data.activeShirtUrl || null,
-          pantsUrl: data.activePantsUrl || null,
+          shirtUrl: data.activeShirtUrl || data.shirtUrl || null,
+          pantsUrl: data.activePantsUrl || data.pantsUrl || null,
           backgroundUrl: data.equippedBackgroundUrl || data.backgroundUrl || null,
           bio: data.bio || '',
           isOnline: true,
@@ -108,8 +108,8 @@ export function subscribeToRealFirestoreUsers(callback: (users: FriendUser[]) =>
               username: data.username,
               displayName: data.displayName || data.username,
               avatarColors: data.avatarColors || undefined,
-              shirtUrl: data.activeShirtUrl || null,
-              pantsUrl: data.activePantsUrl || null,
+              shirtUrl: data.activeShirtUrl || data.shirtUrl || null,
+              pantsUrl: data.activePantsUrl || data.pantsUrl || null,
               backgroundUrl: data.equippedBackgroundUrl || data.backgroundUrl || null,
               bio: data.bio || '',
               isOnline: true,
@@ -320,6 +320,8 @@ export async function sendFriendRequest(
     displayName?: string;
     avatarColors?: AvatarColors;
     shirtUrl?: string | null;
+    pantsUrl?: string | null;
+    backgroundUrl?: string | null;
   },
   targetUser: {
     uid: string;
@@ -327,6 +329,8 @@ export async function sendFriendRequest(
     displayName?: string;
     avatarColors?: AvatarColors;
     shirtUrl?: string | null;
+    pantsUrl?: string | null;
+    backgroundUrl?: string | null;
   }
 ): Promise<boolean> {
   const reqId = `req_${fromUser.uid}_${targetUser.uid}`;
@@ -337,6 +341,8 @@ export async function sendFriendRequest(
     fromDisplayName: fromUser.displayName || fromUser.username,
     fromColors: fromUser.avatarColors,
     fromShirtUrl: fromUser.shirtUrl || null,
+    fromPantsUrl: fromUser.pantsUrl || null,
+    fromBackgroundUrl: fromUser.backgroundUrl || null,
     toUid: targetUser.uid,
     toUsername: targetUser.username,
     createdAt: Date.now(),
@@ -352,7 +358,8 @@ export async function sendFriendRequest(
 
   if (db) {
     try {
-      await setDoc(doc(db, 'friend_requests', reqId), newReq);
+      const cleanReq = JSON.parse(JSON.stringify(newReq));
+      await setDoc(doc(db, 'friend_requests', reqId), cleanReq);
       return true;
     } catch (err) {
       console.error('[Friends] Error writing friend request to Firestore:', err);
@@ -370,6 +377,8 @@ export async function acceptFriendRequest(
     displayName?: string;
     avatarColors?: AvatarColors;
     shirtUrl?: string | null;
+    pantsUrl?: string | null;
+    backgroundUrl?: string | null;
   }
 ): Promise<void> {
   const localReqs = getSavedRequests(myUser.uid).filter((r) => r.id !== request.id);
@@ -382,6 +391,8 @@ export async function acceptFriendRequest(
     displayName: request.fromDisplayName,
     avatarColors: request.fromColors,
     shirtUrl: request.fromShirtUrl || null,
+    pantsUrl: request.fromPantsUrl || null,
+    backgroundUrl: request.fromBackgroundUrl || null,
     isOnline: true,
     statusText: 'Online',
     addedAt: Date.now(),
@@ -398,6 +409,8 @@ export async function acceptFriendRequest(
     displayName: myUser.displayName || myUser.username,
     avatarColors: myUser.avatarColors,
     shirtUrl: myUser.shirtUrl || null,
+    pantsUrl: myUser.pantsUrl || null,
+    backgroundUrl: myUser.backgroundUrl || null,
     isOnline: true,
     statusText: 'Online',
     addedAt: Date.now(),
@@ -405,9 +418,11 @@ export async function acceptFriendRequest(
 
   if (db) {
     try {
-      await deleteDoc(doc(db, 'friend_requests', request.id));
-      await setDoc(doc(db, 'users', myUser.uid, 'friends', request.fromUid), newFriendForMe);
-      await setDoc(doc(db, 'users', request.fromUid, 'friends', myUser.uid), friendSelfForOther);
+      await deleteDoc(doc(db, 'friend_requests', request.id)).catch(() => {});
+      const cleanForMe = JSON.parse(JSON.stringify(newFriendForMe));
+      const cleanForOther = JSON.parse(JSON.stringify(friendSelfForOther));
+      await setDoc(doc(db, 'users', myUser.uid, 'friends', request.fromUid), cleanForMe);
+      await setDoc(doc(db, 'users', request.fromUid, 'friends', myUser.uid), cleanForOther);
     } catch (err) {
       console.error('[Friends] Error writing accepted friendship in Firestore:', err);
     }
@@ -496,8 +511,10 @@ export async function followUser(
 
   if (db) {
     try {
-      await setDoc(doc(db, 'users', myUser.uid, 'following', targetUser.uid), record);
-      await setDoc(doc(db, 'users', targetUser.uid, 'followers', myUser.uid), followerRecord);
+      const cleanFollowing = JSON.parse(JSON.stringify(record));
+      const cleanFollower = JSON.parse(JSON.stringify(followerRecord));
+      await setDoc(doc(db, 'users', myUser.uid, 'following', targetUser.uid), cleanFollowing);
+      await setDoc(doc(db, 'users', targetUser.uid, 'followers', myUser.uid), cleanFollower);
     } catch (err) {
       console.error('[Friends] Error writing follow in Firestore:', err);
     }

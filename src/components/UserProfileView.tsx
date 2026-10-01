@@ -15,6 +15,7 @@ import {
   Heart,
   Pencil,
   Image as ImageIcon,
+  EyeOff,
 } from 'lucide-react';
 import ProfileBust3D from './profile/ProfileBust3D.tsx';
 import ProfileBanner3D from './profile/ProfileBanner3D.tsx';
@@ -31,7 +32,7 @@ import {
   subscribeToFollowing,
   subscribeToFollowers,
 } from '../utils/friendsStorage.ts';
-import { db, doc, updateDoc } from '../utils/firebase.ts';
+import { db, auth, doc, updateDoc, onSnapshot } from '../utils/firebase.ts';
 
 export interface UserProfileViewProps {
   viewingUser?: FriendUser | null;
@@ -44,6 +45,7 @@ export interface UserProfileViewProps {
   onPlayGame: (game: SavedGame) => void;
   onOpenStudio: (game?: SavedGame) => void;
   onNavigateToAvatar: () => void;
+  onViewMyProfile?: () => void;
   onEquipShirt?: (url: string | null) => void;
   onEquipPants?: (url: string | null) => void;
   onBack?: () => void;
@@ -78,6 +80,7 @@ export default function UserProfileView({
   onPlayGame,
   onOpenStudio,
   onNavigateToAvatar,
+  onViewMyProfile,
   onEquipShirt,
   onEquipPants,
   onBack,
@@ -89,20 +92,60 @@ export default function UserProfileView({
   isFollowing = false,
   isReqPending = false,
 }: UserProfileViewProps) {
-  const isOwnProfile = !viewingUser || (currentUserId && viewingUser.uid === currentUserId);
+  // Robust check for own profile (matches currentUserId, auth.currentUser, or logged-in username)
+  const storedUserRaw = typeof window !== 'undefined' ? localStorage.getItem('rovix_current_user_v1') : null;
+  const storedUser = storedUserRaw ? JSON.parse(storedUserRaw) : null;
+  const myUid = currentUserId || storedUser?.uid || auth.currentUser?.uid;
+  const myUsername = (storedUser?.username || '').toLowerCase().replace('@', '');
+  const viewingUsername = (viewingUser?.username || '').toLowerCase().replace('@', '');
 
-  // Active user data
-  const activeDisplayName = isOwnProfile
-    ? undefined
-    : viewingUser?.displayName || viewingUser?.username || 'Player';
-  const activeUsername = isOwnProfile ? undefined : viewingUser?.username || 'Player';
+  const isOwnProfile =
+    !viewingUser ||
+    (Boolean(myUid) && viewingUser.uid === myUid) ||
+    (Boolean(myUsername) && viewingUsername === myUsername) ||
+    viewingUser.uid === 'local';
 
-  const activeColors: AvatarColors = isOwnProfile
+  // Active target UID for live stats & Firestore document
+  const targetUid = isOwnProfile ? (currentUserId || 'local') : viewingUser?.uid || 'local';
+
+  // Live Firestore User Document sync for 100% real-time clothing, background, and profile info
+  const [liveUserData, setLiveUserData] = useState<{
+    displayName?: string;
+    username?: string;
+    avatarColors?: AvatarColors;
+    shirtUrl?: string | null;
+    pantsUrl?: string | null;
+    backgroundUrl?: string | null;
+    bio?: string;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!targetUid || targetUid === 'local' || !db) return;
+    try {
+      const unsub = onSnapshot(doc(db, 'users', targetUid), (docSnap) => {
+        if (docSnap.exists()) {
+          const d = docSnap.data();
+          setLiveUserData({
+            displayName: d.displayName || d.username,
+            username: d.username,
+            avatarColors: d.avatarColors,
+            shirtUrl: d.activeShirtUrl || d.shirtUrl || null,
+            pantsUrl: d.activePantsUrl || d.pantsUrl || null,
+            backgroundUrl: d.equippedBackgroundUrl || d.backgroundUrl || null,
+            bio: d.bio || '',
+          });
+        }
+      });
+      return () => unsub();
+    } catch {}
+  }, [targetUid]);
+
+  const activeColors: AvatarColors = liveUserData?.avatarColors || (isOwnProfile
     ? colors
-    : viewingUser?.avatarColors || { head: '#f5cd2f', torso: '#0d69ac', leftArm: '#f5cd2f', rightArm: '#f5cd2f', leftLeg: '#a0a528', rightLeg: '#a0a528' };
-  const activeShirt = isOwnProfile ? shirtUrl : viewingUser?.shirtUrl || null;
-  const activePants = isOwnProfile ? pantsUrl : viewingUser?.pantsUrl || null;
-  const activeBackground = isOwnProfile ? (backgroundUrl || null) : (viewingUser?.backgroundUrl || null);
+    : viewingUser?.avatarColors || { head: '#f5cd2f', torso: '#0d69ac', leftArm: '#f5cd2f', rightArm: '#f5cd2f', leftLeg: '#a0a528', rightLeg: '#a0a528' });
+  const activeShirt = liveUserData?.shirtUrl !== undefined ? liveUserData.shirtUrl : (isOwnProfile ? shirtUrl : viewingUser?.shirtUrl || null);
+  const activePants = liveUserData?.pantsUrl !== undefined ? liveUserData.pantsUrl : (isOwnProfile ? pantsUrl : viewingUser?.pantsUrl || null);
+  const activeBackground = liveUserData?.backgroundUrl !== undefined ? liveUserData.backgroundUrl : (isOwnProfile ? (backgroundUrl || null) : (viewingUser?.backgroundUrl || null));
 
   // Load persistent profile details for self
   const [profile, setProfile] = useState<ProfileData>(() => {
@@ -148,9 +191,6 @@ export default function UserProfileView({
       followingCount: 0,
     };
   });
-
-  // Active target UID for live stats
-  const targetUid = isOwnProfile ? (currentUserId || 'local') : viewingUser?.uid || 'local';
 
   // Live counts for Friends, Followers, and Following
   useEffect(() => {
@@ -305,10 +345,28 @@ export default function UserProfileView({
     });
   }
 
-  // Filter creations
+  // Filter creations for this profile's user (shows their exact creations whether public or private)
+  const targetUsernameClean = (
+    isOwnProfile
+      ? profile.username.replace('@', '')
+      : viewingUser?.username || profile.username.replace('@', '')
+  ).toLowerCase();
+  const targetDisplayNameClean = (
+    isOwnProfile
+      ? profile.displayName
+      : viewingUser?.displayName || profile.displayName
+  ).toLowerCase();
+
   const displayGames = savedGames.filter((g) => {
-    if (isOwnProfile) return true;
-    return g.isPublic;
+    const creatorClean = (g.creator || '').toLowerCase();
+    const matchesUser =
+      (g.creatorId && (g.creatorId === targetUid || (isOwnProfile && g.creatorId === currentUserId))) ||
+      (targetUsernameClean && (creatorClean === targetUsernameClean || creatorClean === `@${targetUsernameClean}`)) ||
+      (targetDisplayNameClean && (creatorClean === targetDisplayNameClean || creatorClean === `@${targetDisplayNameClean}`)) ||
+      (liveUserData?.username && (creatorClean === liveUserData.username.toLowerCase() || creatorClean === `@${liveUserData.username.toLowerCase()}`)) ||
+      (liveUserData?.displayName && creatorClean === liveUserData.displayName.toLowerCase()) ||
+      (!g.creatorId && isOwnProfile); // fallback for newly created studio places on own profile
+    return matchesUser;
   });
 
   const handleOpenEditProfile = () => {
@@ -614,7 +672,7 @@ export default function UserProfileView({
 
                     {/* 3 DOTS FLOATING MENU */}
                     {showMoreMenu && (
-                      <div className="absolute right-0 mt-1.5 w-48 bg-[#202225] border border-neutral-700 shadow-2xl rounded-lg py-1 z-50 animate-fade-in divide-y divide-neutral-800">
+                      <div className="absolute right-0 mt-1.5 w-52 bg-[#202225] border border-neutral-700 shadow-2xl rounded-lg py-1 z-50 animate-fade-in divide-y divide-neutral-800">
                         {isOwnProfile ? (
                           <div className="py-1">
                             <button
@@ -624,6 +682,17 @@ export default function UserProfileView({
                             >
                               <Pencil className="w-3.5 h-3.5 text-blue-400" />
                               <span>Edit Profile</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setShowMoreMenu(false);
+                                onNavigateToAvatar();
+                              }}
+                              className="w-full px-3.5 py-2 text-xs text-left text-neutral-200 hover:text-white hover:bg-[#2b2e34] flex items-center gap-2 transition-colors cursor-pointer"
+                            >
+                              <User className="w-3.5 h-3.5 text-purple-400" />
+                              <span>Avatar Editor</span>
                             </button>
                             <button
                               type="button"
@@ -639,6 +708,20 @@ export default function UserProfileView({
                           </div>
                         ) : (
                           <div className="py-1">
+                            {onViewMyProfile && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setShowMoreMenu(false);
+                                  onViewMyProfile();
+                                }}
+                                className="w-full px-3.5 py-2 text-xs text-left text-blue-400 hover:text-blue-300 hover:bg-[#2b2e34] flex items-center gap-2 transition-colors cursor-pointer font-semibold border-b border-neutral-800/80 mb-1"
+                              >
+                                <User className="w-3.5 h-3.5" />
+                                <span>View My Profile (Mine)</span>
+                              </button>
+                            )}
+
                             {isFriend ? (
                               <button
                                 type="button"
@@ -988,12 +1071,23 @@ export default function UserProfileView({
                     </div>
 
                     <div className="flex-1 w-full pt-1">
-                      <h3
-                        onClick={() => setSelectedGame(game)}
-                        className="text-xl sm:text-2xl font-bold text-white hover:text-blue-400 cursor-pointer tracking-tight transition-colors"
-                      >
-                        {game.title}
-                      </h3>
+                      <div className="flex items-center gap-2.5 flex-wrap">
+                        <h3
+                          onClick={() => setSelectedGame(game)}
+                          className="text-xl sm:text-2xl font-bold text-white hover:text-blue-400 cursor-pointer tracking-tight transition-colors"
+                        >
+                          {game.title}
+                        </h3>
+                        {game.isPublic ? (
+                          <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                            Public
+                          </span>
+                        ) : (
+                          <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30 flex items-center gap-1">
+                            <EyeOff className="w-3 h-3" /> Private
+                          </span>
+                        )}
+                      </div>
 
                       <div className="border-b border-neutral-800 w-full my-3" />
 
@@ -1056,8 +1150,19 @@ export default function UserProfileView({
                       )}
                     </div>
                     <div className="p-3.5">
-                      <div className="font-bold text-white truncate group-hover:text-blue-400 transition-colors">
-                        {game.title}
+                      <div className="flex items-center justify-between gap-1 mb-1">
+                        <div className="font-bold text-white truncate group-hover:text-blue-400 transition-colors">
+                          {game.title}
+                        </div>
+                        {game.isPublic ? (
+                          <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 shrink-0">
+                            Public
+                          </span>
+                        ) : (
+                          <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30 shrink-0 flex items-center gap-0.5">
+                            <EyeOff className="w-2.5 h-2.5" /> Private
+                          </span>
+                        )}
                       </div>
                       <div className="text-xs text-neutral-400 mt-0.5 truncate">
                         By {game.creator || profile.username}

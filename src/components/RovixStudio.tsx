@@ -227,9 +227,11 @@ export default function RovixStudio({
   };
 
   const handleCreateNewExperience = () => {
+    const rovixUserRaw = localStorage.getItem('rovix_current_user_v1');
+    const rovixUser = rovixUserRaw ? JSON.parse(rovixUserRaw) : null;
     const user = accountService.getCurrentUser();
-    const creatorName = user ? user.displayName || user.username : 'Creator';
-    const creatorId = user ? user.id : undefined;
+    const creatorName = rovixUser?.displayName || rovixUser?.username || (user ? user.displayName || user.username : 'Creator');
+    const creatorId = rovixUser?.uid || (user ? user.id : undefined);
 
     const newPlace: SavedGame = {
       id: 'game_' + Date.now(),

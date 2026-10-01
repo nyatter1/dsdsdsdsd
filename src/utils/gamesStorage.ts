@@ -1225,6 +1225,19 @@ export function subscribeToLiveGames(callback: (games: SavedGame[]) => void): ()
       });
 
       list.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+      if (list.length === 0) {
+        const localList = getSavedGames();
+        if (localList.length > 0) {
+          localList.forEach((g) => {
+            try {
+              const cleanData = JSON.parse(JSON.stringify(g));
+              setDoc(doc(db, 'published_games', g.id), cleanData, { merge: true }).catch(() => {});
+            } catch {}
+          });
+          callback(localList);
+          return;
+        }
+      }
       cachedLiveGames = list;
       saveGamesListToLocalStorage(list);
       callback(list);
@@ -1243,14 +1256,14 @@ export function getSavedGames(): SavedGame[] {
     const raw = safeGameStorage.getItem(STORAGE_KEY_GAMES);
     if (raw) {
       const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) {
+      if (Array.isArray(parsed) && parsed.length > 0) {
         return parsed;
       }
     }
   } catch (e) {
     console.error('Failed to load games from localStorage:', e);
   }
-  return [];
+  return [DEFAULT_TEST_PLACE];
 }
 
 function saveGamesListToLocalStorage(games: SavedGame[]): void {
@@ -1262,6 +1275,7 @@ function saveGamesListToLocalStorage(games: SavedGame[]): void {
 }
 
 export function saveGamesList(games: SavedGame[]): void {
+  cachedLiveGames = games;
   saveGamesListToLocalStorage(games);
 }
 
@@ -1285,12 +1299,16 @@ export function saveGame(game: SavedGame): SavedGame {
     games.unshift(updatedGame);
   }
 
+  cachedLiveGames = games;
   saveGamesListToLocalStorage(games);
 
   // Sync Live to Firebase Firestore so ALL users see it on their site!
   if (db) {
     try {
-      setDoc(doc(db, 'published_games', game.id), updatedGame, { merge: true });
+      const cleanData = JSON.parse(JSON.stringify(updatedGame));
+      setDoc(doc(db, 'published_games', game.id), cleanData, { merge: true }).catch((err) => {
+        console.warn('Firestore setDoc failed for published_games:', err);
+      });
     } catch (e) {
       console.error('Error publishing game to Firestore:', e);
     }
@@ -1301,11 +1319,12 @@ export function saveGame(game: SavedGame): SavedGame {
 
 export function deleteGame(id: string): void {
   const games = getSavedGames().filter((g) => g.id !== id);
+  cachedLiveGames = games;
   saveGamesListToLocalStorage(games);
 
   if (db) {
     try {
-      deleteDoc(doc(db, 'published_games', id));
+      deleteDoc(doc(db, 'published_games', id)).catch(() => {});
     } catch (e) {
       console.error('Error deleting game from Firestore:', e);
     }

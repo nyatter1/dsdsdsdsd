@@ -227,63 +227,78 @@ function generate2DFallback(colors: AvatarColors): string {
   return c.toDataURL();
 }
 
-async function renderAvatarThumbnail(colors: AvatarColors, shirtUrl: string | null): Promise<string> {
+let renderQueue: Promise<any> = Promise.resolve();
+
+function renderAvatarThumbnail(colors: AvatarColors, shirtUrl: string | null): Promise<string> {
   const cacheKey = `${colors.head}_${colors.torso}_${colors.leftArm}_${colors.rightArm}_${shirtUrl || 'none'}`;
   if (thumbnailCache.has(cacheKey)) {
-    return thumbnailCache.get(cacheKey)!;
+    return Promise.resolve(thumbnailCache.get(cacheKey)!);
   }
 
-  const { renderer, scene, camera, charGroup } = getOrCreateSharedRenderer();
-  if (!renderer) {
-    const fallback = generate2DFallback(colors);
-    thumbnailCache.set(cacheKey, fallback);
-    return fallback;
-  }
+  // Pre-fetch texture before locking shared scene
+  const texturePromise = shirtUrl ? loadCachedTexture(shirtUrl).catch(() => null) : Promise.resolve(null);
 
-  // Update mesh materials
-  if (sharedHeadMesh) (sharedHeadMesh.material as THREE.MeshStandardMaterial).color.set(colors.head || '#f5cd2f');
-  if (sharedTorsoMesh) (sharedTorsoMesh.material as THREE.MeshStandardMaterial).color.set(colors.torso || '#0d69ac');
-  if (sharedLArmMesh) (sharedLArmMesh.material as THREE.MeshStandardMaterial).color.set(colors.leftArm || '#f5cd2f');
-  if (sharedRArmMesh) (sharedRArmMesh.material as THREE.MeshStandardMaterial).color.set(colors.rightArm || '#f5cd2f');
+  // Queue thumbnail rendering sequentially so avatars never step on each other
+  const task = renderQueue.then(async () => {
+    if (thumbnailCache.has(cacheKey)) {
+      return thumbnailCache.get(cacheKey)!;
+    }
 
-  // Handle shirt overlay
-  if (sharedShirtTorsoMesh) { charGroup.remove(sharedShirtTorsoMesh); sharedShirtTorsoMesh = null; }
-  if (sharedShirtLArmMesh) { charGroup.remove(sharedShirtLArmMesh); sharedShirtLArmMesh = null; }
-  if (sharedShirtRArmMesh) { charGroup.remove(sharedShirtRArmMesh); sharedShirtRArmMesh = null; }
+    const tex = await texturePromise;
+    const { renderer, scene, camera, charGroup } = getOrCreateSharedRenderer();
+    if (!renderer) {
+      const fallback = generate2DFallback(colors);
+      thumbnailCache.set(cacheKey, fallback);
+      return fallback;
+    }
 
-  if (shirtUrl) {
-    try {
-      const tex = await loadCachedTexture(shirtUrl);
-      const shirtMat = new THREE.MeshStandardMaterial({
-        map: tex,
-        transparent: true,
-        alphaTest: 0.05,
-        roughness: 0.45,
-      });
+    // Update mesh materials for this specific avatar
+    if (sharedHeadMesh) (sharedHeadMesh.material as THREE.MeshStandardMaterial).color.set(colors.head || '#f5cd2f');
+    if (sharedTorsoMesh) (sharedTorsoMesh.material as THREE.MeshStandardMaterial).color.set(colors.torso || '#0d69ac');
+    if (sharedLArmMesh) (sharedLArmMesh.material as THREE.MeshStandardMaterial).color.set(colors.leftArm || '#f5cd2f');
+    if (sharedRArmMesh) (sharedRArmMesh.material as THREE.MeshStandardMaterial).color.set(colors.rightArm || '#f5cd2f');
 
-      const sTorsoGeo = new THREE.BoxGeometry(2.016, 2.016, 1.016);
-      applyRobloxClothingUV(sTorsoGeo, 'torso');
-      sharedShirtTorsoMesh = new THREE.Mesh(sTorsoGeo, shirtMat);
-      charGroup.add(sharedShirtTorsoMesh);
+    // Handle shirt overlay
+    if (sharedShirtTorsoMesh) { charGroup.remove(sharedShirtTorsoMesh); sharedShirtTorsoMesh = null; }
+    if (sharedShirtLArmMesh) { charGroup.remove(sharedShirtLArmMesh); sharedShirtLArmMesh = null; }
+    if (sharedShirtRArmMesh) { charGroup.remove(sharedShirtRArmMesh); sharedShirtRArmMesh = null; }
 
-      const sLArmGeo = new THREE.BoxGeometry(1.016, 2.016, 1.016);
-      applyRobloxClothingUV(sLArmGeo, 'leftArm');
-      sharedShirtLArmMesh = new THREE.Mesh(sLArmGeo, shirtMat);
-      sharedShirtLArmMesh.position.set(1.5, 0, 0);
-      charGroup.add(sharedShirtLArmMesh);
+    if (tex) {
+      try {
+        const shirtMat = new THREE.MeshStandardMaterial({
+          map: tex,
+          transparent: true,
+          alphaTest: 0.05,
+          roughness: 0.45,
+        });
 
-      const sRArmGeo = new THREE.BoxGeometry(1.016, 2.016, 1.016);
-      applyRobloxClothingUV(sRArmGeo, 'rightArm');
-      sharedShirtRArmMesh = new THREE.Mesh(sRArmGeo, shirtMat);
-      sharedShirtRArmMesh.position.set(-1.5, 0, 0);
-      charGroup.add(sharedShirtRArmMesh);
-    } catch {}
-  }
+        const sTorsoGeo = new THREE.BoxGeometry(2.016, 2.016, 1.016);
+        applyRobloxClothingUV(sTorsoGeo, 'torso');
+        sharedShirtTorsoMesh = new THREE.Mesh(sTorsoGeo, shirtMat);
+        charGroup.add(sharedShirtTorsoMesh);
 
-  renderer.render(scene, camera);
-  const dataUrl = renderer.domElement.toDataURL('image/png');
-  thumbnailCache.set(cacheKey, dataUrl);
-  return dataUrl;
+        const sLArmGeo = new THREE.BoxGeometry(1.016, 2.016, 1.016);
+        applyRobloxClothingUV(sLArmGeo, 'leftArm');
+        sharedShirtLArmMesh = new THREE.Mesh(sLArmGeo, shirtMat);
+        sharedShirtLArmMesh.position.set(1.5, 0, 0);
+        charGroup.add(sharedShirtLArmMesh);
+
+        const sRArmGeo = new THREE.BoxGeometry(1.016, 2.016, 1.016);
+        applyRobloxClothingUV(sRArmGeo, 'rightArm');
+        sharedShirtRArmMesh = new THREE.Mesh(sRArmGeo, shirtMat);
+        sharedShirtRArmMesh.position.set(-1.5, 0, 0);
+        charGroup.add(sharedShirtRArmMesh);
+      } catch {}
+    }
+
+    renderer.render(scene, camera);
+    const dataUrl = renderer.domElement.toDataURL('image/png');
+    thumbnailCache.set(cacheKey, dataUrl);
+    return dataUrl;
+  });
+
+  renderQueue = task.catch(() => {});
+  return task;
 }
 
 export default function Avatar3DIcon({

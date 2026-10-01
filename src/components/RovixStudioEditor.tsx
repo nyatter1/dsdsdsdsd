@@ -1766,11 +1766,13 @@ end)
   // SAVE EXPERIENCE TO ROVIX DASHBOARD
   const handleSaveExperience = () => {
     let activeCreator = initialGame?.creator || 'Creator';
+    let activeCreatorId = initialGame?.creatorId;
     try {
       const rawUser = localStorage.getItem('rovix_current_user_v1');
       if (rawUser) {
         const u = JSON.parse(rawUser);
-        if (u.username) activeCreator = u.username;
+        if (u.displayName || u.username) activeCreator = u.displayName || u.username;
+        if (u.uid) activeCreatorId = u.uid;
       }
     } catch {}
 
@@ -1778,6 +1780,7 @@ end)
       id: initialGame?.id || 'game_' + Date.now(),
       title: gameTitle.trim() || 'Untitled Experience',
       creator: activeCreator,
+      creatorId: activeCreatorId,
       initials: gameTitle.substring(0, 2).toUpperCase() || 'EX',
       gradient: initialGame?.gradient || 'from-[#1e3a5f] via-[#12233a] to-[#0a1420]',
       isPublic: isPublic,

@@ -199,6 +199,31 @@ export const MARKETPLACE_BACKGROUNDS: BackgroundItem[] = [
 
 const STORAGE_KEY_OWNED_BACKGROUNDS = 'rovix_owned_backgrounds_v1';
 const STORAGE_KEY_EQUIPPED_BACKGROUND = 'rovix_equipped_background_v1';
+const STORAGE_KEY_CUSTOM_BACKGROUNDS = 'rovix_custom_backgrounds_v1';
+
+export function getCustomBackgrounds(): BackgroundItem[] {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY_CUSTOM_BACKGROUNDS);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed;
+    }
+  } catch {}
+  return [];
+}
+
+export function addCustomBackground(item: BackgroundItem): void {
+  const current = getCustomBackgrounds();
+  current.unshift(item);
+  try {
+    localStorage.setItem(STORAGE_KEY_CUSTOM_BACKGROUNDS, JSON.stringify(current));
+  } catch {}
+  buyBackground(item.id);
+}
+
+export function getAllAvailableBackgrounds(): BackgroundItem[] {
+  return [...getCustomBackgrounds(), ...MARKETPLACE_BACKGROUNDS];
+}
 
 export function getOwnedBackgroundIds(): string[] {
   try {
@@ -251,5 +276,5 @@ export function setEquippedBackgroundId(id: string | null) {
 export function getEquippedBackgroundItem(): BackgroundItem | null {
   const id = getEquippedBackgroundId();
   if (!id) return null;
-  return MARKETPLACE_BACKGROUNDS.find((b) => b.id === id) || null;
+  return getAllAvailableBackgrounds().find((b) => b.id === id) || null;
 }

@@ -1,18 +1,23 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Image as ImageIcon,
   Check,
   Sparkles,
   ShoppingBag,
   Trash2,
+  Upload,
+  Loader2,
 } from 'lucide-react';
 import {
+  getAllAvailableBackgrounds,
   MARKETPLACE_BACKGROUNDS,
   BackgroundItem,
   getOwnedBackgroundIds,
   getEquippedBackgroundId,
   setEquippedBackgroundId,
+  addCustomBackground,
 } from '../../utils/backgroundsStorage.ts';
+import { uploadToCloudinary } from '../../utils/cloudinary.ts';
 
 interface ProfileBackgroundManagerProps {
   onOpenMarketplaceBackgrounds: () => void;
@@ -25,20 +30,72 @@ export default function ProfileBackgroundManager({
 }: ProfileBackgroundManagerProps) {
   const [ownedIds, setOwnedIds] = useState<string[]>(getOwnedBackgroundIds);
   const [equippedId, setEquippedId] = useState<string | null>(getEquippedBackgroundId);
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadToast, setUploadToast] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     setOwnedIds(getOwnedBackgroundIds());
     setEquippedId(getEquippedBackgroundId());
   }, []);
 
+  const allBackgrounds = getAllAvailableBackgrounds();
+
   const handleEquip = (id: string | null) => {
     setEquippedBackgroundId(id);
     setEquippedId(id);
-    const item = MARKETPLACE_BACKGROUNDS.find((b) => b.id === id);
+    const item = allBackgrounds.find((b) => b.id === id);
     onBackgroundEquippedChange?.(item ? item.imageUrl : null);
   };
 
-  const ownedItems = MARKETPLACE_BACKGROUNDS.filter((b) => ownedIds.includes(b.id));
+  const handleCustomBackgroundUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setIsUploading(true);
+    try {
+      let finalUrl = '';
+      try {
+        finalUrl = await uploadToCloudinary(file, 'profile_backgrounds');
+      } catch {
+        // Fallback to dataUrl if direct Cloudinary call fails
+        finalUrl = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = (event) => resolve(event.target?.result as string);
+          reader.onerror = reject;
+          reader.readAsDataURL(file);
+        });
+      }
+
+      const newBg: BackgroundItem = {
+        id: 'bg_custom_' + Date.now(),
+        name: file.name.replace(/\.[^/.]+$/, '').substring(0, 20) || 'Custom Background',
+        creator: 'You',
+        isVerified: true,
+        price: 'Custom',
+        numericPrice: 0,
+        imageUrl: finalUrl,
+        starsCount: 1,
+        created: 'Today',
+        description: 'Custom uploaded profile background stored in Cloudinary.',
+        category: 'Custom',
+      };
+
+      addCustomBackground(newBg);
+      setOwnedIds(getOwnedBackgroundIds());
+      handleEquip(newBg.id);
+
+      setUploadToast('Background uploaded via Cloudinary & equipped!');
+      setTimeout(() => setUploadToast(null), 3500);
+    } catch (err: any) {
+      console.error('Custom background upload error:', err);
+    } finally {
+      setIsUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
+  const ownedItems = allBackgrounds.filter((b) => ownedIds.includes(b.id));
 
   return (
     <div className="flex-1 flex flex-col space-y-6">
@@ -82,21 +139,51 @@ export default function ProfileBackgroundManager({
 
       {/* Unlocked / Bought Backgrounds Section */}
       <div className="space-y-3">
-        <div className="flex items-center justify-between text-xs font-semibold text-neutral-300">
+        <div className="flex items-center justify-between text-xs font-semibold text-neutral-300 flex-wrap gap-2">
           <div className="flex items-center gap-1.5">
             <Sparkles className="w-3.5 h-3.5 text-amber-400" />
             <span>Your Owned Backgrounds ({ownedItems.length}):</span>
           </div>
 
-          <button
-            type="button"
-            onClick={onOpenMarketplaceBackgrounds}
-            className="text-blue-400 hover:text-blue-300 flex items-center gap-1 text-[11px] font-semibold cursor-pointer"
-          >
-            <ShoppingBag className="w-3.5 h-3.5" />
-            <span>Get More in Marketplace</span>
-          </button>
+          <div className="flex items-center gap-3">
+            <input
+              type="file"
+              ref={fileInputRef}
+              accept="image/png,image/jpeg,image/webp,image/jpg"
+              onChange={handleCustomBackgroundUpload}
+              className="hidden"
+            />
+            <button
+              type="button"
+              disabled={isUploading}
+              onClick={() => fileInputRef.current?.click()}
+              className="px-2.5 py-1 bg-[#2b2e34] hover:bg-[#343840] border border-neutral-700/80 rounded text-neutral-200 hover:text-white flex items-center gap-1.5 text-[11px] font-semibold cursor-pointer transition-colors"
+            >
+              {isUploading ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-400" />
+              ) : (
+                <Upload className="w-3.5 h-3.5 text-blue-400" />
+              )}
+              <span>{isUploading ? 'Uploading to Cloudinary...' : 'Upload Custom'}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={onOpenMarketplaceBackgrounds}
+              className="text-blue-400 hover:text-blue-300 flex items-center gap-1 text-[11px] font-semibold cursor-pointer"
+            >
+              <ShoppingBag className="w-3.5 h-3.5" />
+              <span>Marketplace</span>
+            </button>
+          </div>
         </div>
+
+        {uploadToast && (
+          <div className="p-2.5 rounded bg-emerald-950/60 border border-emerald-500/40 text-emerald-300 text-xs font-medium flex items-center gap-2 animate-fade-in">
+            <Check className="w-4 h-4 text-emerald-400 shrink-0" />
+            <span>{uploadToast}</span>
+          </div>
+        )}
 
         {ownedItems.length === 0 ? (
           <div className="bg-[#1c1e22] border border-dashed border-neutral-800 p-8 rounded-xl text-center space-y-3">

@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { validateRobloxTemplate, TEMPLATE_WIDTH, TEMPLATE_HEIGHT } from '../utils/robloxClothingUV.ts';
 import { getStoredInventory, addClothingToInventory, ClothingItem } from '../utils/inventoryStorage.ts';
+import { uploadToCloudinary } from '../utils/cloudinary.ts';
 
 export interface ClothingManagerProps {
   clothingType: 'shirt' | 'pants';
@@ -35,6 +36,7 @@ export default function ClothingManager({
 }: ClothingManagerProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
   const [inventory, setInventory] = useState(getStoredInventory());
   const [lastUploadedItem, setLastUploadedItem] = useState<ClothingItem | null>(null);
   const [validationInfo, setValidationInfo] = useState<{
@@ -56,6 +58,7 @@ export default function ClothingManager({
   const itemsList = isShirt ? inventory.shirts : inventory.pants;
 
   const handleProcessFile = async (file: File) => {
+    setIsUploading(true);
     const result = await validateRobloxTemplate(file);
     setValidationInfo({
       valid: result.valid,
@@ -66,21 +69,37 @@ export default function ClothingManager({
     });
 
     if (result.valid && result.dataUrl) {
-      // Save directly into persistent inventory
+      let finalUrl = result.dataUrl;
+      try {
+        const cloudUrl = await uploadToCloudinary(file, 'clothing');
+        if (cloudUrl) finalUrl = cloudUrl;
+      } catch (err) {
+        console.warn('Direct file upload to Cloudinary failed, trying dataUrl:', err);
+        try {
+          const cloudUrl = await uploadToCloudinary(result.dataUrl, 'clothing');
+          if (cloudUrl) finalUrl = cloudUrl;
+        } catch (e2) {
+          console.warn('Cloudinary upload fallback to dataUrl:', e2);
+        }
+      }
+
+      // Save directly into persistent inventory with Cloudinary URL
       const cleanName = file.name.replace(/\.[^/.]+$/, '').substring(0, 50) || (isShirt ? 'Custom Shirt' : 'Custom Pants');
       const created = addClothingToInventory({
         name: cleanName,
         description: isShirt ? 'Custom Shirt' : 'Custom Pants',
         type: clothingType,
-        dataUrl: result.dataUrl,
+        dataUrl: finalUrl,
+        cloudinaryUrl: finalUrl.startsWith('http') ? finalUrl : undefined,
         isOnSale: true,
         price: 0,
       });
 
       setLastUploadedItem(created);
       setInventory(getStoredInventory());
-      onApply(result.dataUrl);
+      onApply(finalUrl);
     }
+    setIsUploading(false);
   };
 
   const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -164,14 +183,18 @@ export default function ClothingManager({
         />
 
         <div className="w-12 h-12 rounded-full bg-[#2b2d31] flex items-center justify-center text-neutral-300 mb-1">
-          <Upload className="w-5 h-5" />
+          {isUploading ? (
+            <div className="w-5 h-5 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
+          ) : (
+            <Upload className="w-5 h-5" />
+          )}
         </div>
 
         <div className="text-sm font-semibold text-white">
-          Upload Classic {isShirt ? 'Shirt' : 'Pants'} Template
+          {isUploading ? 'Uploading to Cloudinary...' : `Upload Classic ${isShirt ? 'Shirt' : 'Pants'} Template`}
         </div>
         <div className="text-xs text-neutral-400 max-w-sm">
-          Drag and drop your 2D PNG clothing template, or click to browse.
+          {isUploading ? 'Processing UV map and hosting on Cloudinary CDN' : 'Drag and drop your 2D PNG clothing template, or click to browse.'}
         </div>
         <div className="text-[11px] text-neutral-500 font-mono mt-1">
           Free • Saved to your Inventory • {TEMPLATE_WIDTH} × {TEMPLATE_HEIGHT} px
