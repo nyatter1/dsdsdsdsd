@@ -12,11 +12,21 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const server = http.createServer(app);
 
-// Force mobile browsers (like Edge Mobile or Safari) to re-fetch live updates instantly without stale memory caching
-app.use((_req, res, next) => {
-  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0');
-  res.setHeader('Pragma', 'no-cache');
-  res.setHeader('Expires', '0');
+// Cache control middleware tailored for instant updates while permitting PWA manifest & SW installation
+app.use((req, res, next) => {
+  const url = req.path;
+  if (
+    url.endsWith('manifest.json') ||
+    url.endsWith('sw.js') ||
+    url.endsWith('.png') ||
+    url.endsWith('.svg') ||
+    url.endsWith('.jpg') ||
+    url.endsWith('.jpeg')
+  ) {
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+  } else {
+    res.setHeader('Cache-Control', 'no-cache, must-revalidate');
+  }
   next();
 });
 

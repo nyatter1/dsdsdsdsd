@@ -30,7 +30,7 @@ import RovixStudio from './components/RovixStudio.tsx';
 import UserProfileView from './components/UserProfileView.tsx';
 import FriendsView from './components/friends/FriendsView.tsx';
 import HomeFriendsHeader from './components/home/HomeFriendsHeader.tsx';
-import DownloadAppModal from './components/home/DownloadAppModal.tsx';
+import PWAInstallModal from './components/pwa/PWAInstallModal.tsx';
 import MarketplaceCatalogView from './components/marketplace/MarketplaceCatalogView.tsx';
 import MarketplaceItemDetailsView from './components/marketplace/MarketplaceItemDetailsView.tsx';
 import MarketplaceBackgroundDetailsView from './components/marketplace/MarketplaceBackgroundDetailsView.tsx';
@@ -1386,8 +1386,8 @@ function AppContent() {
           </div>
         </div>
       )}
-      {/* App Download Modal */}
-      <DownloadAppModal
+      {/* App PWA Install Modal */}
+      <PWAInstallModal
         isOpen={showDownloadAppModal}
         onClose={() => setShowDownloadAppModal(false)}
       />
