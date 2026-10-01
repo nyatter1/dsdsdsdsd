@@ -30,7 +30,7 @@ interface MoreHubViewProps {
   onNavigateToMarketplace: () => void;
   onNavigateToFriends: () => void;
   onNavigateToDiscover: () => void;
-  onDownloadZip?: () => void;
+  onDownloadApp?: () => void;
   onLogOut: () => void;
 }
 
@@ -45,7 +45,7 @@ export default function MoreHubView({
   onNavigateToMarketplace,
   onNavigateToFriends,
   onNavigateToDiscover,
-  onDownloadZip,
+  onDownloadApp,
   onLogOut,
 }: MoreHubViewProps) {
   const menuItems = [
@@ -59,12 +59,12 @@ export default function MoreHubView({
       highlight: true,
     },
     {
-      id: 'download-zip',
-      title: 'Download Entire Site (.ZIP)',
-      subtitle: 'Download complete source code, 3D engine & assets in a zip file',
-      icon: FolderArchive,
+      id: 'download-app',
+      title: 'Download App',
+      subtitle: 'Download and install Rovix to play anywhere with touch controls',
+      icon: Smartphone,
       color: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20',
-      action: onDownloadZip,
+      action: onDownloadApp,
     },
     {
       id: 'avatar',

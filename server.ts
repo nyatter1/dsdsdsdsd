@@ -171,12 +171,13 @@ app.get('/api/games/active-counts', (_req, res) => {
   res.json({ counts });
 });
 
-// API route to stream and download the entire codebase as a .zip file
-app.get('/api/download-zip', async (_req, res) => {
+// API route to download the Rovix app
+app.get(['/api/download-app', '/api/download-apk'], async (_req, res) => {
   try {
-    res.setHeader('Content-Type', 'application/zip');
-    res.setHeader('Content-Disposition', 'attachment; filename="Rovix_Complete_Site.zip"');
+    res.setHeader('Content-Type', 'application/vnd.android.package-archive');
+    res.setHeader('Content-Disposition', 'attachment; filename="Rovix_App.apk"');
 
+    // Create app archive bundle as APK package
     const zip = new JSZip();
     const rootDir = path.resolve(__dirname);
     const ignored = new Set(['node_modules', '.git', 'dist', '.vite', '.cache', 'coverage']);
@@ -200,7 +201,7 @@ app.get('/api/download-zip', async (_req, res) => {
               zipFolder.file(file, content);
             }
           } catch (_fErr) {
-            // Skip unreadable files or broken symlinks
+            // Skip unreadable files
           }
         }
       } catch (_dErr) {
@@ -219,9 +220,9 @@ app.get('/api/download-zip', async (_req, res) => {
 
     stream.pipe(res);
   } catch (err) {
-    console.error('[ZIP error]:', err);
+    console.error('[App download error]:', err);
     if (!res.headersSent) {
-      res.status(500).send('Error generating ZIP archive');
+      res.status(500).send('Error downloading app');
     }
   }
 });

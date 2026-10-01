@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ShoppingBag, Star, CheckCircle2, Image as ImageIcon, Sparkles } from 'lucide-react';
+import { ShoppingBag, Star, CheckCircle2, Image as ImageIcon, Sparkles, Check } from 'lucide-react';
 import {
   getAllMarketplaceItems,
   MarketplaceItem,
@@ -11,7 +11,16 @@ import {
   getOwnedBackgroundIds,
   getEquippedBackgroundId,
 } from '../../utils/backgroundsStorage.ts';
+import {
+  MARKETPLACE_BORDERS,
+  BorderItem,
+  getOwnedBorderIds,
+  getEquippedBorderId,
+  buyBorder,
+  setEquippedBorderId,
+} from '../../utils/bordersStorage.ts';
 import ClothingDummyPreview from './ClothingDummyPreview.tsx';
+import ProfileBorderWrapper from '../profile/ProfileBorderWrapper.tsx';
 
 interface MarketplaceCatalogViewProps {
   onSelectItem: (item: MarketplaceItem) => void;
@@ -27,6 +36,9 @@ export default function MarketplaceCatalogView({
   activePantsUrl,
 }: MarketplaceCatalogViewProps) {
   const [filterType, setFilterType] = useState<'all' | 'shirt' | 'pants' | 'backgrounds' | 'borders'>('all');
+  const [ownedBorderIds, setOwnedBorderIds] = useState<string[]>(() => getOwnedBorderIds());
+  const [equippedBorderId, setEquippedBorderIdState] = useState<string | null>(() => getEquippedBorderId());
+
   const clothingItems = getAllMarketplaceItems();
   const ownedBackgroundIds = getOwnedBackgroundIds();
   const equippedBackgroundId = getEquippedBackgroundId();
@@ -38,7 +50,23 @@ export default function MarketplaceCatalogView({
   });
 
   const showBackgrounds = filterType === 'all' || filterType === 'backgrounds';
-  const showBorders = filterType === 'borders';
+  const showBorders = filterType === 'all' || filterType === 'borders';
+
+  const handleToggleEquipBorder = (border: BorderItem, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!ownedBorderIds.includes(border.id)) {
+      buyBorder(border.id);
+      setOwnedBorderIds(getOwnedBorderIds());
+    }
+
+    if (equippedBorderId === border.id) {
+      setEquippedBorderId(null);
+      setEquippedBorderIdState(null);
+    } else {
+      setEquippedBorderId(border.id);
+      setEquippedBorderIdState(border.id);
+    }
+  };
 
   return (
     <div className="flex-1 bg-[#191b1d] text-[#e3e5e8] overflow-y-auto min-h-screen select-none font-sans">
@@ -51,7 +79,7 @@ export default function MarketplaceCatalogView({
               <span>Marketplace</span>
             </h1>
             <p className="text-xs text-neutral-400 mt-1">
-              Browse authentic classic Rovix clothing items and 3D profile backgrounds.
+              Browse authentic classic Rovix clothing, profile backgrounds &amp; 50+ animated profile borders.
             </p>
           </div>
 
@@ -66,7 +94,19 @@ export default function MarketplaceCatalogView({
                   : 'text-neutral-400 hover:text-white'
               }`}
             >
-              All Items ({clothingItems.length + MARKETPLACE_BACKGROUNDS.length})
+              All Items ({clothingItems.length + MARKETPLACE_BACKGROUNDS.length + MARKETPLACE_BORDERS.length})
+            </button>
+            <button
+              type="button"
+              onClick={() => setFilterType('borders')}
+              className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap flex items-center gap-1.5 ${
+                filterType === 'borders'
+                  ? 'bg-purple-600 text-white'
+                  : 'text-purple-400 hover:text-purple-300'
+              }`}
+            >
+              <Sparkles className="w-3.5 h-3.5 text-purple-400" />
+              <span>Profile Borders ({MARKETPLACE_BORDERS.length})</span>
             </button>
             <button
               type="button"
@@ -102,35 +142,96 @@ export default function MarketplaceCatalogView({
               <ImageIcon className="w-3.5 h-3.5" />
               <span>Backgrounds ({MARKETPLACE_BACKGROUNDS.length})</span>
             </button>
-            <button
-              type="button"
-              onClick={() => setFilterType('borders')}
-              className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap flex items-center gap-1.5 ${
-                filterType === 'borders'
-                  ? 'bg-amber-600 text-white'
-                  : 'text-amber-400/90 hover:text-amber-300'
-              }`}
-            >
-              <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-              <span>Borders (Coming Soon)</span>
-            </button>
           </div>
         </div>
 
-        {/* SECTION: Borders (Coming Soon) */}
+        {/* SECTION: Profile Borders Grid */}
         {showBorders && (
-          <div className="py-16 text-center space-y-4 bg-[#202225] border border-neutral-800 rounded-2xl p-8">
-            <div className="w-16 h-16 rounded-2xl bg-amber-500/10 border border-amber-500/20 text-amber-400 flex items-center justify-center mx-auto shadow-lg">
-              <Sparkles className="w-8 h-8" />
-            </div>
-            <h2 className="text-xl font-bold text-white">Avatar Profile Borders (Coming Soon)</h2>
-            <p className="text-xs text-neutral-400 max-w-md mx-auto leading-relaxed">
-              Custom animated profile borders, neon avatar frames, and glowing edges are currently in development for the Rovix Marketplace!
-            </p>
-            <div className="pt-2">
-              <span className="px-3 py-1 rounded-full bg-amber-500/20 border border-amber-500/30 text-amber-300 text-xs font-bold">
-                Coming Soon
-              </span>
+          <div className="space-y-3.5">
+            {filterType === 'all' && (
+              <div className="flex items-center justify-between">
+                <h2 className="text-base font-bold text-white flex items-center gap-2">
+                  <Sparkles className="w-4 h-4 text-purple-400" />
+                  <span>Profile Borders ({MARKETPLACE_BORDERS.length} Options)</span>
+                </h2>
+                <button
+                  type="button"
+                  onClick={() => setFilterType('borders')}
+                  className="text-xs text-purple-400 hover:text-purple-300 font-semibold cursor-pointer"
+                >
+                  View All ({MARKETPLACE_BORDERS.length}) &rarr;
+                </button>
+              </div>
+            )}
+
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3.5">
+              {MARKETPLACE_BORDERS.map((border) => {
+                const isOwned = ownedBorderIds.includes(border.id);
+                const isEquipped = equippedBorderId === border.id;
+
+                return (
+                  <div
+                    key={border.id}
+                    onClick={(e) => handleToggleEquipBorder(border, e)}
+                    className={`group cursor-pointer flex flex-col bg-[#202225] border rounded-xl overflow-hidden transition-all shadow-sm relative p-3 text-center items-center justify-between space-y-2.5 ${
+                      isEquipped
+                        ? 'border-purple-500 ring-2 ring-purple-500/50 bg-purple-950/10'
+                        : 'border-neutral-800 hover:border-neutral-600 hover:bg-[#25282e]'
+                    }`}
+                  >
+                    {/* Badge */}
+                    {border.isAnimated && (
+                      <span className="absolute top-2 left-2 px-1.5 py-0.5 rounded text-[9px] font-black bg-purple-500/20 text-purple-300 border border-purple-500/30 flex items-center gap-0.5">
+                        <Sparkles className="w-2.5 h-2.5 text-purple-400" />
+                        ANIMATED
+                      </span>
+                    )}
+
+                    {/* Border Avatar Preview */}
+                    <div className="pt-3">
+                      <ProfileBorderWrapper border={border} sizeClassName="w-16 h-16">
+                        <div className="w-full h-full bg-gradient-to-tr from-slate-800 to-indigo-900 flex items-center justify-center text-white font-black text-xs">
+                          ROVIX
+                        </div>
+                      </ProfileBorderWrapper>
+                    </div>
+
+                    {/* Details */}
+                    <div className="w-full space-y-1">
+                      <div className="font-bold text-xs text-white truncate group-hover:text-purple-300 transition-colors" title={border.name}>
+                        {border.name}
+                      </div>
+                      <div className="text-[10px] text-neutral-400 truncate">
+                        By {border.creator}
+                      </div>
+                    </div>
+
+                    {/* Equip/Owned Action */}
+                    <button
+                      type="button"
+                      onClick={(e) => handleToggleEquipBorder(border, e)}
+                      className={`w-full py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-1 ${
+                        isEquipped
+                          ? 'bg-purple-600 text-white shadow-md'
+                          : isOwned
+                          ? 'bg-[#2b2d31] hover:bg-[#34373c] text-neutral-200 border border-neutral-700'
+                          : 'bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30'
+                      }`}
+                    >
+                      {isEquipped ? (
+                        <>
+                          <Check className="w-3.5 h-3.5 text-white" />
+                          <span>Equipped</span>
+                        </>
+                      ) : isOwned ? (
+                        <span>Equip</span>
+                      ) : (
+                        <span>Get Free</span>
+                      )}
+                    </button>
+                  </div>
+                );
+              })}
             </div>
           </div>
         )}

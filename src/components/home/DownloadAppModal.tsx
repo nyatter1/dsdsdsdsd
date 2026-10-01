@@ -1,43 +1,42 @@
 import React, { useState } from 'react';
 import {
   Download,
-  FolderArchive,
+  Smartphone,
   CheckCircle2,
   X,
-  FileCode,
-  Layers,
-  Terminal,
-  ShieldCheck,
+  Gamepad2,
   Sparkles,
+  ShieldCheck,
   ArrowDownToLine,
+  Flame,
 } from 'lucide-react';
 
-interface DownloadZipModalProps {
+interface DownloadAppModalProps {
   isOpen: boolean;
   onClose: () => void;
 }
 
-export default function DownloadZipModal({ isOpen, onClose }: DownloadZipModalProps) {
+export default function DownloadAppModal({ isOpen, onClose }: DownloadAppModalProps) {
   const [isDownloading, setIsDownloading] = useState(false);
   const [downloadSuccess, setDownloadSuccess] = useState(false);
 
   if (!isOpen) return null;
 
-  const handleDownloadZip = async () => {
+  const handleDownloadApp = async () => {
     setIsDownloading(true);
     setDownloadSuccess(false);
 
     try {
-      const response = await fetch('/api/download-zip');
+      const response = await fetch('/api/download-app');
       if (!response.ok) {
-        throw new Error('Failed to generate ZIP archive from server');
+        throw new Error('Failed to download app package');
       }
 
       const blob = await response.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = 'Rovix_Complete_Site.zip';
+      a.download = 'Rovix_App.apk';
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -48,8 +47,8 @@ export default function DownloadZipModal({ isOpen, onClose }: DownloadZipModalPr
       setTimeout(() => setDownloadSuccess(false), 5000);
     } catch (err) {
       console.error('Download error:', err);
-      // Fallback: direct window download trigger
-      window.location.href = '/api/download-zip';
+      // Fallback direct download
+      window.location.href = '/api/download-app';
       setIsDownloading(false);
       setDownloadSuccess(true);
     }
@@ -59,22 +58,22 @@ export default function DownloadZipModal({ isOpen, onClose }: DownloadZipModalPr
     <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4 animate-fade-in select-none font-sans">
       <div className="bg-[#1f2125] border border-neutral-700/80 rounded-2xl max-w-lg w-full overflow-hidden shadow-2xl relative flex flex-col max-h-[92vh]">
         {/* Header */}
-        <div className="relative bg-gradient-to-r from-blue-900/40 via-indigo-900/30 to-neutral-900/60 p-5 sm:p-6 border-b border-neutral-800 flex items-center justify-between shrink-0">
+        <div className="relative bg-gradient-to-r from-blue-900/50 via-indigo-900/40 to-neutral-900/60 p-5 sm:p-6 border-b border-neutral-800 flex items-center justify-between shrink-0">
           <div className="flex items-center gap-3.5">
             <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-blue-600 to-indigo-500 flex items-center justify-center shadow-lg border border-blue-400/40 shrink-0">
-              <FolderArchive className="w-6 h-6 text-white" />
+              <Smartphone className="w-6 h-6 text-white" />
             </div>
             <div>
               <div className="flex items-center gap-2">
                 <h3 className="text-base sm:text-lg font-black text-white tracking-wide">
-                  Download Entire Site (.ZIP)
+                  Download Rovix App
                 </h3>
                 <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-blue-500/20 text-blue-300 border border-blue-500/30">
-                  FULL SOURCE
+                  OFFICIAL APP
                 </span>
               </div>
               <p className="text-xs text-neutral-400 mt-0.5">
-                Complete codebase, 3D engine, assets &amp; multiplayer backend
+                Full 3D graphics, touch controls, and real-time multiplayer
               </p>
             </div>
           </div>
@@ -94,71 +93,64 @@ export default function DownloadZipModal({ isOpen, onClose }: DownloadZipModalPr
           <div className="space-y-2">
             <button
               type="button"
-              onClick={handleDownloadZip}
+              onClick={handleDownloadApp}
               disabled={isDownloading}
               className="w-full py-4 px-5 rounded-xl bg-gradient-to-r from-blue-600 hover:from-blue-500 to-indigo-600 hover:to-indigo-500 text-white font-bold text-sm sm:text-base flex items-center justify-center gap-3 shadow-xl shadow-blue-600/30 transition-all transform active:scale-98 cursor-pointer border border-blue-400/40"
             >
               {isDownloading ? (
                 <>
                   <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                  <span>Generating &amp; Compressing .ZIP...</span>
+                  <span>Preparing Download...</span>
                 </>
               ) : downloadSuccess ? (
                 <>
                   <CheckCircle2 className="w-5 h-5 text-emerald-400" />
-                  <span className="text-emerald-300">Rovix_Complete_Site.zip Downloaded!</span>
+                  <span className="text-emerald-300">Rovix App Downloaded!</span>
                 </>
               ) : (
                 <>
                   <ArrowDownToLine className="w-5 h-5" />
-                  <span>Download Complete Site (.ZIP)</span>
+                  <span>Download App</span>
                 </>
               )}
             </button>
 
             <p className="text-[11px] text-neutral-400 text-center font-medium">
-              Downloads the complete project archive ready to extract and run anywhere.
+              Download and install Rovix to play anywhere on your device.
             </p>
           </div>
 
-          {/* Included in this ZIP */}
+          {/* Included Features */}
           <div className="space-y-2.5">
             <h4 className="text-xs font-bold uppercase tracking-wider text-neutral-400">
-              Included in the ZIP Archive
+              App Features &amp; Controls
             </h4>
             <div className="space-y-2 bg-[#17181a] border border-neutral-800/80 rounded-xl p-3.5 text-xs text-neutral-300">
               <div className="flex items-center gap-2.5">
-                <FileCode className="w-4 h-4 text-blue-400 shrink-0" />
-                <span><strong>Full Frontend:</strong> React 19, Three.js 3D Viewport, Tailwind CSS &amp; Vite</span>
+                <Gamepad2 className="w-4 h-4 text-blue-400 shrink-0" />
+                <span><strong>Mobile Controls:</strong> Virtual touch thumbstick &amp; dedicated jump button</span>
               </div>
               <div className="flex items-center gap-2.5">
-                <Layers className="w-4 h-4 text-purple-400 shrink-0" />
-                <span><strong>Game Engine:</strong> Character physics, Lua script executor &amp; Roblox GUI</span>
+                <Sparkles className="w-4 h-4 text-purple-400 shrink-0" />
+                <span><strong>Full 3D Engine:</strong> Smooth rendering, avatar customizer &amp; marketplace</span>
               </div>
               <div className="flex items-center gap-2.5">
-                <Sparkles className="w-4 h-4 text-amber-400 shrink-0" />
-                <span><strong>Studio &amp; Avatar:</strong> Rovix 3D Studio, Clothing UV textures &amp; Marketplace</span>
-              </div>
-              <div className="flex items-center gap-2.5">
-                <Terminal className="w-4 h-4 text-emerald-400 shrink-0" />
-                <span><strong>Backend Server:</strong> Node.js + Express + WebSocket real-time rooms</span>
+                <Flame className="w-4 h-4 text-amber-400 shrink-0" />
+                <span><strong>Multiplayer:</strong> Real-time rooms, friends list &amp; live chat</span>
               </div>
             </div>
           </div>
 
-          {/* How to run locally */}
+          {/* Installation Steps */}
           <div className="bg-[#24272c] border border-neutral-700/80 rounded-xl p-4 space-y-2.5">
             <div className="flex items-center gap-2 text-xs font-bold text-white">
-              <Terminal className="w-4 h-4 text-blue-400" />
-              <span>How to Run Locally on Your Machine:</span>
+              <Smartphone className="w-4 h-4 text-blue-400" />
+              <span>Easy Installation Guide:</span>
             </div>
-            <div className="bg-[#18191c] rounded-lg p-3 font-mono text-[11px] text-neutral-300 space-y-1.5 border border-neutral-800">
-              <div className="text-neutral-500"># 1. Extract the ZIP file</div>
-              <div className="text-blue-300">unzip Rovix_Complete_Site.zip</div>
-              <div className="text-neutral-500 mt-2"># 2. Install dependencies</div>
-              <div className="text-blue-300">npm install</div>
-              <div className="text-neutral-500 mt-2"># 3. Start the engine server &amp; web app</div>
-              <div className="text-emerald-400">npm run dev</div>
+            <div className="bg-[#18191c] rounded-lg p-3 text-[11px] text-neutral-300 space-y-1.5 border border-neutral-800 leading-relaxed">
+              <div>1. Tap <strong>Download App</strong> above to get the package.</div>
+              <div>2. Open the downloaded file on your device.</div>
+              <div>3. Follow the quick on-screen prompt to launch Rovix and play!</div>
             </div>
           </div>
         </div>
@@ -167,7 +159,7 @@ export default function DownloadZipModal({ isOpen, onClose }: DownloadZipModalPr
         <div className="p-4 bg-[#17181a] border-t border-neutral-800 flex items-center justify-between shrink-0">
           <div className="flex items-center gap-1.5 text-[11px] text-neutral-400">
             <ShieldCheck className="w-4 h-4 text-emerald-400" />
-            <span>Clean, complete zip with all project files</span>
+            <span>Safe &amp; direct official download</span>
           </div>
           <button
             type="button"

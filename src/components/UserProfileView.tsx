@@ -20,6 +20,8 @@ import {
 import ProfileBust3D from './profile/ProfileBust3D.tsx';
 import ProfileBanner3D from './profile/ProfileBanner3D.tsx';
 import ProfileAvatar2D from './profile/ProfileAvatar2D.tsx';
+import ProfileBorderWrapper from './profile/ProfileBorderWrapper.tsx';
+import { getEquippedBorderItem } from '../utils/bordersStorage.ts';
 import { AvatarColors } from './AvatarCanvas3D.tsx';
 import { SavedGame } from '../utils/gamesStorage.ts';
 import { getStoredInventory } from '../utils/inventoryStorage.ts';
@@ -561,22 +563,24 @@ export default function UserProfileView({
         {/* 2. PROFILE HEADER: AVATAR BUST ON LEFT + USERNAME + BUTTONS & 3 DOTS */}
         <div className="relative -mt-16 sm:-mt-20 px-2 sm:px-4 z-20">
           <div className="flex flex-col sm:flex-row items-center sm:items-end gap-5">
-            {/* Circular Profile Icon */}
+            {/* Circular Profile Icon with Equipped Border */}
             <div className="relative shrink-0 group">
-              <div className="w-32 h-32 sm:w-36 sm:h-36 rounded-full bg-[#202225] border-4 border-[#191b1d] shadow-2xl relative overflow-hidden flex items-center justify-center ring-2 ring-neutral-700/80">
-                {activeBackground && (
-                  <img
-                    src={activeBackground}
-                    alt="Icon Background"
-                    className="absolute inset-0 w-full h-full object-cover object-center scale-110 filter brightness-70"
+              <ProfileBorderWrapper border={getEquippedBorderItem()} sizeClassName="w-32 h-32 sm:w-36 sm:h-36">
+                <div className="w-full h-full rounded-full bg-[#202225] relative overflow-hidden flex items-center justify-center">
+                  {activeBackground && (
+                    <img
+                      src={activeBackground}
+                      alt="Icon Background"
+                      className="absolute inset-0 w-full h-full object-cover object-center scale-110 filter brightness-70"
+                    />
+                  )}
+                  <ProfileBust3D
+                    colors={activeColors}
+                    shirtUrl={activeShirt}
+                    className="w-full h-full relative z-10"
                   />
-                )}
-                <ProfileBust3D
-                  colors={activeColors}
-                  shirtUrl={activeShirt}
-                  className="w-full h-full relative z-10"
-                />
-              </div>
+                </div>
+              </ProfileBorderWrapper>
 
               <div
                 className="absolute bottom-1 right-1 w-7 h-7 rounded-full bg-[#00a2ff] border-2 border-[#191b1d] flex items-center justify-center text-white shadow-md z-20"

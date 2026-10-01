@@ -30,12 +30,15 @@ import RovixStudio from './components/RovixStudio.tsx';
 import UserProfileView from './components/UserProfileView.tsx';
 import FriendsView from './components/friends/FriendsView.tsx';
 import HomeFriendsHeader from './components/home/HomeFriendsHeader.tsx';
-import DownloadZipModal from './components/home/DownloadZipModal.tsx';
+import DownloadAppModal from './components/home/DownloadAppModal.tsx';
 import MarketplaceCatalogView from './components/marketplace/MarketplaceCatalogView.tsx';
 import MarketplaceItemDetailsView from './components/marketplace/MarketplaceItemDetailsView.tsx';
 import MarketplaceBackgroundDetailsView from './components/marketplace/MarketplaceBackgroundDetailsView.tsx';
 import ManageItemView from './components/marketplace/ManageItemView.tsx';
 import ProfileBackgroundManager from './components/profile/ProfileBackgroundManager.tsx';
+import ProfileBorderManager from './components/profile/ProfileBorderManager.tsx';
+import ProfileBorderWrapper from './components/profile/ProfileBorderWrapper.tsx';
+import { getEquippedBorderItem } from './utils/bordersStorage.ts';
 import { MarketplaceItem } from './utils/marketplaceItems.ts';
 import {
   BackgroundItem,
@@ -160,7 +163,7 @@ function AppContent() {
   const [followingList, setFollowingList] = useState<FollowRecord[]>([]);
   const [friendRequests, setFriendRequests] = useState<FriendRequest[]>([]);
   const [viewingUserProfile, setViewingUserProfile] = useState<FriendUser | null>(null);
-  const [showDownloadZipModal, setShowDownloadZipModal] = useState(false);
+  const [showDownloadAppModal, setShowDownloadAppModal] = useState(false);
 
   // Subscribe to real Firestore friends, following & friend requests
   useEffect(() => {
@@ -482,12 +485,12 @@ function AppContent() {
         <div className="flex items-center gap-2 sm:gap-2.5">
           <button
             type="button"
-            onClick={() => setShowDownloadZipModal(true)}
+            onClick={() => setShowDownloadAppModal(true)}
             className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-blue-600/20 to-indigo-600/20 hover:from-blue-600/30 hover:to-indigo-600/30 text-blue-300 hover:text-white text-xs font-bold border border-blue-500/30 rounded transition-all cursor-pointer shadow-xs"
-            title="Download Entire Site (.ZIP)"
+            title="Download Rovix App"
           >
-            <FolderArchive className="w-3.5 h-3.5 text-blue-400" />
-            <span>Download .ZIP</span>
+            <Smartphone className="w-3.5 h-3.5 text-blue-400" />
+            <span>Download</span>
           </button>
 
           <button
@@ -496,14 +499,12 @@ function AppContent() {
               setViewingUserProfile(null);
               setActiveTab('profile');
             }}
-            className={`w-9 h-9 rounded-full flex items-center justify-center transition-all cursor-pointer border overflow-hidden bg-[#16181b] ${
-              activeTab === 'profile' && !viewingUserProfile
-                ? 'border-blue-400 shadow-sm ring-2 ring-blue-500/50'
-                : 'border-neutral-700/90 hover:border-neutral-500'
-            }`}
+            className="cursor-pointer transition-transform hover:scale-105"
             title={`My Profile (@${profileName})`}
           >
-            <Avatar3DIcon colors={avatarColors} shirtUrl={activeShirtUrl} className="w-9 h-9" />
+            <ProfileBorderWrapper border={getEquippedBorderItem()} sizeClassName="w-9 h-9">
+              <Avatar3DIcon colors={avatarColors} shirtUrl={activeShirtUrl} className="w-9 h-9" />
+            </ProfileBorderWrapper>
           </button>
 
           <div className="relative">
@@ -1115,20 +1116,15 @@ function AppContent() {
                     onBackgroundEquippedChange={(url) => setEquippedBackgroundUrl(url)}
                   />
                 ) : (
-                  <div className="bg-[#202225] border border-neutral-800 p-8 rounded-xl text-center space-y-4 my-auto">
-                    <div className="w-14 h-14 rounded-2xl bg-amber-500/10 border border-amber-500/20 text-amber-400 flex items-center justify-center mx-auto shadow-md">
-                      <Sparkles className="w-7 h-7" />
-                    </div>
-                    <h3 className="text-lg font-bold text-white">Avatar Borders &amp; Frames (Coming Soon)</h3>
-                    <p className="text-xs text-neutral-400 max-w-sm mx-auto leading-relaxed">
-                      Custom animated profile borders, neon avatar frames, and glowing edges will be available here to equip to your avatar profile!
-                    </p>
-                    <div className="pt-2">
-                      <span className="px-3 py-1 rounded-full bg-amber-500/20 border border-amber-500/30 text-amber-300 text-xs font-bold">
-                        Coming Soon
-                      </span>
-                    </div>
-                  </div>
+                  <ProfileBorderManager
+                    colors={avatarColors}
+                    shirtUrl={activeShirtUrl}
+                    onOpenMarketplaceBorders={() => {
+                      setSelectedMarketplaceItem(null);
+                      setSelectedBackground(null);
+                      setActiveTab('marketplace');
+                    }}
+                  />
                 )}
               </div>
             </div>
@@ -1151,29 +1147,29 @@ function AppContent() {
               }}
               onNavigateToFriends={() => setActiveTab('friends')}
               onNavigateToDiscover={() => setActiveTab('discover')}
-              onDownloadZip={() => setShowDownloadZipModal(true)}
+              onDownloadApp={() => setShowDownloadAppModal(true)}
               onLogOut={handleLogOut}
             />
           ) : (
             /* HOME VIEW */
             <main className="p-4 sm:p-6 max-w-6xl w-full mx-auto space-y-6 sm:space-y-8 flex-1">
-              {/* ZIP DOWNLOAD HERO BANNER ON HOMEPAGE */}
+              {/* APP DOWNLOAD HERO BANNER ON HOMEPAGE */}
               <div className="bg-gradient-to-r from-blue-900/35 via-indigo-950/40 to-[#202225] border border-blue-500/30 hover:border-blue-500/50 rounded-2xl p-4 sm:p-5 flex flex-col sm:flex-row items-center justify-between gap-4 shadow-xl transition-all">
                 <div className="flex items-center gap-3.5 text-center sm:text-left">
                   <div className="w-12 h-12 sm:w-14 sm:h-14 rounded-2xl bg-gradient-to-tr from-blue-600 to-indigo-500 border border-blue-400/40 flex items-center justify-center shadow-lg shrink-0">
-                    <FolderArchive className="w-6 h-6 sm:w-7 sm:h-7 text-white" />
+                    <Smartphone className="w-6 h-6 sm:w-7 sm:h-7 text-white" />
                   </div>
                   <div>
                     <div className="flex items-center justify-center sm:justify-start gap-2">
                       <h3 className="text-base sm:text-lg font-black text-white tracking-wide">
-                        Download Entire Site (.ZIP)
+                        Download Rovix App
                       </h3>
                       <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-blue-500/20 text-blue-300 border border-blue-500/30">
-                        FULL PROJECT
+                        OFFICIAL APP
                       </span>
                     </div>
                     <p className="text-xs text-neutral-300 mt-1 max-w-xl leading-relaxed">
-                      Download the complete site codebase, 3D engine, custom avatar creator, studio &amp; multiplayer backend in a single .zip file to run anywhere!
+                      Download and install Rovix to play anywhere with full 3D graphics, mobile joystick &amp; jump controls, and multiplayer!
                     </p>
                   </div>
                 </div>
@@ -1181,11 +1177,11 @@ function AppContent() {
                 <div className="flex items-center gap-2.5 w-full sm:w-auto shrink-0">
                   <button
                     type="button"
-                    onClick={() => setShowDownloadZipModal(true)}
-                    className="w-full sm:w-auto py-2.5 px-5 bg-gradient-to-r from-blue-600 hover:from-blue-500 to-indigo-600 hover:to-indigo-500 text-white text-xs font-bold rounded-xl flex items-center justify-center gap-2 shadow-lg shadow-blue-600/30 transition-all cursor-pointer border border-blue-400/40 active:scale-95"
+                    onClick={() => setShowDownloadAppModal(true)}
+                    className="w-full sm:w-auto py-2.5 px-6 bg-gradient-to-r from-blue-600 hover:from-blue-500 to-indigo-600 hover:to-indigo-500 text-white text-xs font-bold rounded-xl flex items-center justify-center gap-2 shadow-lg shadow-blue-600/30 transition-all cursor-pointer border border-blue-400/40 active:scale-95"
                   >
                     <Download className="w-4 h-4" />
-                    <span>Download .ZIP</span>
+                    <span>Download</span>
                   </button>
                 </div>
               </div>
@@ -1347,11 +1343,9 @@ function AppContent() {
           }`}
           title={`My Profile (@${profileName})`}
         >
-          <div className={`w-6 h-6 rounded-full overflow-hidden border flex items-center justify-center bg-[#16181b] ${
-            activeTab === 'profile' && !viewingUserProfile ? 'border-blue-400 ring-2 ring-blue-500/50' : 'border-neutral-700'
-          }`}>
+          <ProfileBorderWrapper border={getEquippedBorderItem()} sizeClassName="w-6 h-6">
             <Avatar3DIcon colors={avatarColors} shirtUrl={activeShirtUrl} className="w-6 h-6" />
-          </div>
+          </ProfileBorderWrapper>
           <span className="text-[10px]">Profile</span>
         </button>
 
@@ -1392,10 +1386,10 @@ function AppContent() {
           </div>
         </div>
       )}
-      {/* Entire Site ZIP Download Modal */}
-      <DownloadZipModal
-        isOpen={showDownloadZipModal}
-        onClose={() => setShowDownloadZipModal(false)}
+      {/* App Download Modal */}
+      <DownloadAppModal
+        isOpen={showDownloadAppModal}
+        onClose={() => setShowDownloadAppModal(false)}
       />
     </div>
   );
